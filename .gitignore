@@ -1,0 +1,38 @@
+# ===== OS / Editor =====
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ===== Go =====
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.out
+
+# ===== Env / Secrets =====
+.env
+.env.*
+*.local
+
+# ===== Logs =====
+*.log
+
+# ===== Docker / Runtime Data =====
+db-data/
+**/db-data/
+kafka_data/
+**/kafka_data/
+tmp/
+**/tmp/
+
+# ===== Postgres runtime =====
+*.pid
+
+# ===== Build / Dist =====
+dist/
+build/

@@ -1,0 +1,45 @@
+services:
+  user_db_server:
+    image: postgres:14.0
+    container_name: user_db_server
+    ports:
+      - "5441:5432"
+    environment:
+      POSTGRES_USER: user_microservice
+      POSTGRES_PASSWORD: user_microservice_password
+      POSTGRES_DB: user_microservice
+    volumes:
+      - ./db-data/user_db_server/:/var/lib/postgresql/data
+
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    container_name: kafka
+    ports:
+      - "9092:9092"   # host access (Windows)
+      - "9093:9093"   # controller
+    environment:
+      CLUSTER_ID: "2643bf443ecf404392637930b7e69ba7"
+
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "controller,broker"
+
+      # listeners: internal (docker) + external (host)
+      KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+
+      KAFKA_LOG_DIRS: "/var/lib/kafka/data"
+      KAFKA_DELETE_TOPIC_ENABLE: "true"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+
+volumes:
+  kafka_data:
