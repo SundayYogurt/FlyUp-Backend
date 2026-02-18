@@ -4,6 +4,10 @@ import (
 	"context"
 	"go-flyup/internal/domain"
 	"go-flyup/internal/dto"
+
+	"github.com/SundayYogurt/user_service/internal/interfaces"
+	"github.com/SundayYogurt/user_service/internal/repository"
+	"github.com/gofiber/fiber/v2"
 )
 
 package services
@@ -11,40 +15,128 @@ package services
 import (
 "context"
 
-"go-flyup/internal/domain"
 "go-flyup/internal/dto"
 )
 
 type UserService interface {
-	// =====================
 	// Auth
-	// =====================
-	Register(ctx context.Context, in dto.UserSignup) (*domain.User, error)
+	Register(input dto.UserSignup) error
+	Login(email, password string) (domain.User, error)
+	Authenticate(c *fiber.Ctx) (*domain.User, error)
+	ForgotPassword(email string) error
+	ResetPassword(token, newPassword string) error
 
-	// Authenticate = ยืนยันตัวตน (verify email+password) คืน user
-	Authenticate(ctx context.Context, email, password string) (*domain.User, error)
+	// Profile
+	GetProfile(userID uint) (*domain.User, error)
+	UpdateProfile(userID uint, input dto.UpdateUserProfile) (*domain.User, error)
 
-	// Login = Authenticate + ออก token
-	Login(ctx context.Context, email, password string) (*dto.AuthTokens, *domain.User, error)
+	// Role & Status
+	SetStatus(userID uint, status string) error
+	SetRoles(userID uint, roles []string) error
 
-	// password reset
-	ForgotPassword(ctx context.Context, email string) error
-	ResetPassword(ctx context.Context, token, newPassword string) error
+	// Pioneer Verification
+	SubmitPioneerVerification(userID uint, input dto.PioneerVerificationRequest) error
+	ApprovePioneer(userID uint, adminID uint, note string) error
+	RejectPioneer(userID uint, adminID uint, reason string) error
+	ListPendingPioneerVerifications() ([]dto.PioneerVerificationResponse, error)
 
-	// optional (แนะนำถ้าทำ refresh token)
-	RefreshToken(ctx context.Context, refreshToken string) (*dto.AuthTokens, error)
-	Logout(ctx context.Context, refreshToken string) error
+	// Booster Verification
+	SubmitKYC(userID uint, input dto.KYCRequest) error
+	GetKYCStatus(userID uint) (*dto.KYCStatusResponse, error)
 
-	// =====================
-	// Profile (Identity)
-	// =====================
-	CreateProfile(ctx context.Context, userID string, in dto.UserProfile) (*domain.User, error)
-	GetProfile(ctx context.Context, userID string) (*domain.User, error)
-	UpdateProfile(ctx context.Context, userID string, in dto.UpdateProfile) (*domain.User, error)
-
-	// =====================
-	// Admin
-	// =====================
-	SetStatus(ctx context.Context, userID string, status string) error           // active/suspended/deleted
-	SetRoles(ctx context.Context, userID string, roles []string) error          // ADMIN/STUDENT/BOOSTER
+	// Authorization for investment
+	EnsureUserCanInvest(userID uint) error
 }
+
+
+
+type userService struct {
+	repo repository.UserRepository
+	producer *interfaces.ProducerHandler
+}
+
+func NewUserService(repo repository.UserRepository, producer *interfaces.ProducerHandler) UserService {
+	return &userService{repo: repo, producer: producer}
+}
+
+func (u userService) Register(input dto.UserSignup) error {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (u userService) Login(email, password string) (domain.User, error) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (u userService) Authenticate(c *fiber.Ctx) (*domain.User, error) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (u userService) ForgotPassword(email string) error {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (u userService) ResetPassword(token, newPassword string) error {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (u userService) GetProfile(userID uint) (*domain.User, error) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (u userService) UpdateProfile(userID uint, input dto.UpdateUserProfile) (*domain.User, error) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (u userService) SetStatus(userID uint, status string) error {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (u userService) SetRoles(userID uint, roles []string) error {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (u userService) SubmitPioneerVerification(userID uint, input dto.PioneerVerificationRequest) error {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (u userService) ApprovePioneer(userID uint, adminID uint, note string) error {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (u userService) RejectPioneer(userID uint, adminID uint, reason string) error {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (u userService) ListPendingPioneerVerifications() ([]dto.PioneerVerificationResponse, error) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (u userService) SubmitKYC(userID uint, input dto.KYCRequest) error {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (u userService) GetKYCStatus(userID uint) (*dto.KYCStatusResponse, error) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (u userService) EnsureUserCanInvest(userID uint) error {
+	//TODO implement me
+	panic("implement me")
+}
+
+
