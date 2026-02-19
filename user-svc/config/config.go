@@ -8,10 +8,11 @@ import (
 )
 
 type Config struct {
-	ServerPort  string
-	DatabaseDSN string
-	KafkaBroker string
-	KafkaTopic  string
+	ServerPort    string
+	DatabaseDSN   string
+	KafkaBroker   string
+	KafkaTopic    string
+	CloudinaryUrl string
 }
 
 func LoadConfig() Config {
@@ -23,9 +24,10 @@ func LoadConfig() Config {
 	}
 
 	return Config{
-		ServerPort:  os.Getenv("SERVER_PORT"),
-		DatabaseDSN: os.Getenv("DATABASE_DSN"),
-		KafkaBroker: os.Getenv("KAFKA_BROKER"),
-		KafkaTopic:  os.Getenv("KAFKA_TOPIC"),
+		ServerPort:    os.Getenv("SERVER_PORT"),
+		DatabaseDSN:   os.Getenv("DATABASE_DSN"),
+		KafkaBroker:   os.Getenv("KAFKA_BROKER"),
+		KafkaTopic:    os.Getenv("KAFKA_TOPIC"),
+		CloudinaryUrl: os.Getenv("CLOUDINARY_URL"),
 	}
 }
