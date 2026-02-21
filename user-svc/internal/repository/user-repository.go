@@ -11,6 +11,7 @@ type UserRepository interface {
 	SaveUser(user *domain.User) error
 	FindUserByResetToken(token string) (*domain.User, error)
 	FindUserById(userID uint) (*domain.User, error)
+	FindUserByVerificationTokenHash(hash string) (*domain.User, error)
 }
 
 type userRepository struct {
@@ -43,7 +44,7 @@ func (r *userRepository) SaveUser(user *domain.User) error {
 
 func (r *userRepository) FindUserByResetToken(token string) (*domain.User, error) {
 	var user domain.User
-	if err := r.db.Where("reset_token = ?", token).First(&user).Error; err != nil {
+	if err := r.db.Where("reset_token_hash = ?", token).First(&user).Error; err != nil {
 		return nil, err
 	}
 	return &user, nil
@@ -53,6 +54,13 @@ func (r *userRepository) FindUserById(userID uint) (*domain.User, error) {
 	var user domain.User
 	if err := r.db.First(&user, userID).Error; err != nil {
 		return nil, err
+	}
+	return &user, nil
+}
+
+func (r *userRepository) FindUserByVerificationTokenHash(hash string) (*domain.User, error) {
+	var user domain.User
+	if err := r.db.Where("verification_token = ?", hash).First(&user).Error; err != nil {
 	}
 	return &user, nil
 }

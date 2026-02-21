@@ -13,6 +13,7 @@ type Config struct {
 	KafkaBroker   string
 	KafkaTopic    string
 	CloudinaryUrl string
+	IAppApiKey    string
 }
 
 func LoadConfig() Config {
@@ -29,5 +30,6 @@ func LoadConfig() Config {
 		KafkaBroker:   os.Getenv("KAFKA_BROKER"),
 		KafkaTopic:    os.Getenv("KAFKA_TOPIC"),
 		CloudinaryUrl: os.Getenv("CLOUDINARY_URL"),
+		IAppApiKey:    os.Getenv("IAPP_API_KEY"),
 	}
 }

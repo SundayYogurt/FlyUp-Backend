@@ -3,11 +3,11 @@ package domain
 import "time"
 
 type AuditLog struct {
-	ID        uint   `gorm:"primaryKey"`
-	ActorID   uint   `gorm:"not null"` // admin
-	Action    string `gorm:"not null"` // approve_kyc
-	Entity    string `gorm:"not null"` // kyc_submission
-	EntityID  uint   `gorm:"not null"`
-	Note      string
-	CreatedAt time.Time `gorm:"autoCreateTime"`
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	ActorID   uint      `gorm:"not null;index" json:"actor_id"` // admin/user
+	Action    string    `gorm:"type:varchar(100);not null" json:"action"`
+	Entity    string    `gorm:"type:varchar(100);not null" json:"entity"`
+	EntityID  uint      `gorm:"not null;index" json:"entity_id"`
+	Note      *string   `gorm:"type:text" json:"note,omitempty"`
+	CreatedAt time.Time `gorm:"autoCreateTime" json:"created_at"`
 }

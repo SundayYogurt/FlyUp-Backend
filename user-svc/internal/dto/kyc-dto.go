@@ -1,12 +1,12 @@
 package dto
 
 type KYCRequest struct {
-	Documents []KYCDocumentInput `json:"documents"`
+	Documents []KYCDocumentInput `json:"documents" validate:"required,min=1,dive"`
 }
 
 type KYCDocumentInput struct {
-	DocType string `json:"doc_type"` // id_card | student_card | selfie | other
-	FileURL string `json:"file_url"`
+	DocType string `json:"doc_type" validate:"required,oneof=id_card student_card selfie other"`
+	FileURL string `json:"file_url" validate:"required,uri"`
 }
 
 type KYCStatusResponse struct {
@@ -15,7 +15,7 @@ type KYCStatusResponse struct {
 	SubmittedAt string                `json:"submitted_at"`
 	ReviewedAt  *string               `json:"reviewed_at,omitempty"`
 	ReviewNote  *string               `json:"review_note,omitempty"`
-	Documents   []KYCDocumentResponse `json:"documents"`
+	Documents   []KYCDocumentResponse `json:"documents,omitempty"`
 }
 
 type KYCDocumentResponse struct {
@@ -32,9 +32,9 @@ type PendingKYCResponse struct {
 }
 
 type ApproveKYCRequest struct {
-	Note string `json:"note"`
+	Note string `json:"note" validate:"required"`
 }
 
 type RejectKYCRequest struct {
-	Reason string `json:"reason"`
+	Reason string `json:"reason" validate:"required"`
 }

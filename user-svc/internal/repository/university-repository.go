@@ -9,6 +9,7 @@ type UniversityRepository interface {
 	FindByID(id uint) (*domain.University, error)
 	FindByDomain(domain string) (*domain.University, error)
 	List(limit, offset int) ([]domain.University, error)
+	AddUniversity(university *domain.University) error
 }
 
 type universityRepository struct {
@@ -47,4 +48,8 @@ func (u *universityRepository) List(limit, offset int) ([]domain.University, err
 		return nil, err
 	}
 	return universities, nil
+}
+
+func (u *universityRepository) AddUniversity(university *domain.University) error {
+	return u.db.Create(university).Error
 }

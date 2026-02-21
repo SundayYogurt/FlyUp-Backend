@@ -45,18 +45,25 @@ func (k *kycRepository) AddDocuments(kycID uint, docs []domain.KYCDocument) erro
 
 func (k *kycRepository) FindLatestByUserID(userID uint) (*domain.KYCSubmission, error) {
 	var sub domain.KYCSubmission
-
-	if err := k.db.Where("user_id = ?", userID).Order("created_at DESC").First(&sub).Error; err != nil {
+	err := k.db.
+		Preload("Documents").
+		Preload("Review").
+		Where("user_id = ?", userID).
+		Order("created_at DESC").
+		First(&sub).Error
+	if err != nil {
 		return nil, err
 	}
-
 	return &sub, nil
 }
 
 func (k *kycRepository) FindByID(kycID uint) (*domain.KYCSubmission, error) {
 	var sub domain.KYCSubmission
-
-	if err := k.db.First(&sub, kycID).Error; err != nil {
+	err := k.db.
+		Preload("Documents").
+		Preload("Review").
+		First(&sub, kycID).Error
+	if err != nil {
 		return nil, err
 	}
 	return &sub, nil
@@ -75,46 +82,59 @@ func (k *kycRepository) ListPending(limit, offset int) ([]domain.KYCSubmission, 
 
 func (k *kycRepository) Approve(kycID uint, adminID uint, note string) error {
 	now := time.Now()
-	//update kyc subs
-	if err := k.db.Model(&domain.KYCSubmission{}).Where("id = ?", kycID).Updates(map[string]any{
-		"status":      domain.KYCStatusApproved,
-		"reviewed_by": adminID,
-		"reviewed_at": now,
-	}).Error; err != nil {
-		return err
-	}
 
-	//create review
-	review := &domain.KYCReview{
-		KYCID:      kycID,
-		ReviewedBy: adminID,
-		Decision:   domain.KYCDecisionApproved,
-		Note:       note,
-		ReviewedAt: now,
-	}
+	return k.db.Transaction(func(tx *gorm.DB) error {
+		res := tx.Model(&domain.KYCSubmission{}).
+			Where("id = ? AND status = ?", kycID, domain.KYCStatusPending).
+			Updates(map[string]any{
+				"status":      domain.KYCStatusApproved,
+				"reviewed_by": adminID,
+				"reviewed_at": now,
+			})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound // หรือ custom error ว่าไม่ใช่ pending แล้ว
+		}
 
-	return k.db.Create(review).Error
+		review := &domain.KYCReview{
+			KYCID:      kycID,
+			ReviewedBy: adminID,
+			Decision:   domain.KYCDecisionApproved,
+			Note:       note,
+			ReviewedAt: now,
+		}
+		return tx.Create(review).Error
+	})
 }
 
 func (k *kycRepository) Reject(kycID uint, adminID uint, reason string) error {
 	now := time.Now()
-	//update kyc subs
-	if err := k.db.Model(&domain.KYCSubmission{}).Where("id = ?", kycID).Updates(map[string]any{
-		"status":      domain.KYCStatusRejected,
-		"reviewed_by": adminID,
-		"reviewed_at": now,
-	}).Error; err != nil {
-		return err
-	}
 
-	//create review
-	review := &domain.KYCReview{
-		KYCID:      kycID,
-		ReviewedBy: adminID,
-		Decision:   domain.KYCDecisionRejected,
-		Note:       reason,
-		ReviewedAt: now,
-	}
+	return k.db.Transaction(func(tx *gorm.DB) error {
+		res := tx.Model(&domain.KYCSubmission{}).
+			Where("id = ? AND status = ?", kycID, domain.KYCStatusPending).
+			Updates(map[string]any{
+				"status":      domain.KYCStatusRejected,
+				"reviewed_by": adminID,
+				"reviewed_at": now,
+			})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound
+		}
 
-	return k.db.Create(review).Error
+		review := &domain.KYCReview{
+			KYCID:      kycID,
+			ReviewedBy: adminID,
+			Decision:   domain.KYCDecisionRejected,
+			Note:       reason,
+			ReviewedAt: now,
+		}
+
+		return tx.Create(review).Error
+	})
 }
