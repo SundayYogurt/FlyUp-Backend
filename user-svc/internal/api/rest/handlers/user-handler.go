@@ -89,7 +89,7 @@ func (h *UserHandler) Login(c *fiber.Ctx) error {
 		return utils.ResponseError(c, 400, "invalid input")
 	}
 
-	user, err := h.svc.Login(req.Email, req.Password)
+	user, err := h.svc.Login(req)
 	if err != nil {
 		return utils.ResponseError(c, 401, err.Error())
 	}
@@ -99,7 +99,15 @@ func (h *UserHandler) Login(c *fiber.Ctx) error {
 		return utils.ResponseError(c, 500, "could not generate token")
 	}
 
-	return utils.ResponseSuccess(c, 200, fiber.Map{"token": token})
+	return utils.ResponseSuccess(c, 200, dto.LoginResponse{
+		Token: token,
+		User: dto.UserProfileResponse{
+			ID:          user.ID,
+			Email:       user.Email,
+			DisplayName: user.DisplayName,
+			Status:      user.Status,
+		},
+	})
 }
 
 func (h *UserHandler) ForgotPassword(c *fiber.Ctx) error {
@@ -373,9 +381,7 @@ func (h *UserHandler) SetRoles(c *fiber.Ctx) error {
 	}
 	targetID := uint(paramID)
 
-	var req struct {
-		Roles []string `json:"roles"`
-	}
+	var req dto.SetRolesRequest
 	if err := c.BodyParser(&req); err != nil {
 		return utils.ResponseError(c, 400, "invalid input")
 	}
@@ -393,8 +399,9 @@ func (h *UserHandler) SetRoles(c *fiber.Ctx) error {
 	if len(clean) == 0 {
 		return utils.ResponseError(c, 400, "roles required")
 	}
+	req.Roles = clean
 
-	if err := h.svc.SetRoles(targetID, clean); err != nil {
+	if err := h.svc.SetRoles(targetID, req); err != nil {
 		return utils.ResponseError(c, 400, err.Error())
 	}
 	return utils.ResponseSuccess(c, 200, "roles updated")

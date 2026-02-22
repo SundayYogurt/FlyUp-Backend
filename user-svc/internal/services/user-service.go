@@ -23,7 +23,7 @@ import (
 type UserService interface {
 	// Auth
 	Register(input dto.RegisterRequest) error
-	Login(email, password string) (*domain.User, error)
+	Login(input dto.UserLogin) (*domain.User, error)
 	Authenticate(c *fiber.Ctx) (*domain.User, error)
 	ForgotPassword(email string) error
 	SetPassword(input dto.SetPasswordRequest) error
@@ -35,7 +35,7 @@ type UserService interface {
 
 	// Admin: Role & Status
 	SetStatus(userID uint, status string) error
-	SetRoles(userID uint, roles []string) error
+	SetRoles(userID uint, input dto.SetRolesRequest) error
 	IsAdmin(userID uint) (bool, error)
 
 	CreateUniversity(adminID uint, input dto.UniversityCreateRequest) error
@@ -209,8 +209,8 @@ func (u *userService) Register(input dto.RegisterRequest) error {
 	return nil
 }
 
-func (u *userService) Login(email, password string) (*domain.User, error) {
-	email = strings.TrimSpace(strings.ToLower(email))
+func (u *userService) Login(input dto.UserLogin) (*domain.User, error) {
+	email := strings.TrimSpace(strings.ToLower(input.Email))
 
 	user, err := u.repo.FindUserByEmail(email)
 	if err != nil || user == nil {
@@ -221,7 +221,7 @@ func (u *userService) Login(email, password string) (*domain.User, error) {
 		return nil, errors.New("please verify email")
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(input.Password)); err != nil {
 		return nil, errors.New("invalid email or password")
 	}
 
@@ -409,7 +409,9 @@ func (u *userService) SetStatus(userID uint, status string) error {
 	return u.repo.SaveUser(user)
 }
 
-func (u *userService) SetRoles(userID uint, roles []string) error {
+func (u *userService) SetRoles(userID uint, input dto.SetRolesRequest) error {
+	roles := input.Roles
+
 	if userID == 0 {
 		return errors.New("invalid user id")
 	}

@@ -13,12 +13,18 @@ import (
 	"github.com/SundayYogurt/user_service/pkg/cloudinary"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
+	"github.com/gofiber/swagger"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+
+	_ "github.com/SundayYogurt/user_service/docs"
 )
 
 func StartServer(cfg config.Config) {
 	app := fiber.New()
+
+	// Swagger UI
+	app.Get("/swagger/*", swagger.HandlerDefault)
 
 	// ---------- CORS ----------
 	app.Use(cors.New(cors.Config{

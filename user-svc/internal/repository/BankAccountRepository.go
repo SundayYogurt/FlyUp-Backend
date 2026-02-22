@@ -26,9 +26,9 @@ func (b *bankAccountRepository) Create(account *domain.UserBankAccount) error {
 	return b.db.Create(account).Error
 }
 
-func (s *bankAccountRepository) FindByID(id uint) (*domain.UserBankAccount, error) {
+func (b *bankAccountRepository) FindByID(id uint) (*domain.UserBankAccount, error) {
 	var account domain.UserBankAccount
-	if err := s.db.First(&account, id).Error; err != nil {
+	if err := b.db.First(&account, id).Error; err != nil {
 		return nil, err
 	}
 	return &account, nil
