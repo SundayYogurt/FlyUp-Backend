@@ -34,7 +34,17 @@ func StartServer(cfg config.Config) {
 	}
 	log.Println("database connected")
 
-	// ---------- MIGRATION ----------
+	// ---------- MIGRATION + SEED (guarded by advisory lock) ----------
+	// ใช้เลขคงที่ตัวเดียวกันทั้งระบบเพื่อ lock งาน migrate
+	const migrateLockID int64 = 20260222
+
+	if err := db.Exec("SELECT pg_advisory_lock(?)", migrateLockID).Error; err != nil {
+		log.Fatalf("migration lock error: %v", err)
+	}
+	defer func() {
+		_ = db.Exec("SELECT pg_advisory_unlock(?)", migrateLockID).Error
+	}()
+
 	if err := db.AutoMigrate(
 		&domain.User{},
 		&domain.Role{},
@@ -49,17 +59,10 @@ func StartServer(cfg config.Config) {
 	}
 	log.Println("migration successful")
 
-	// seed roles AFTER migration (roles table now exists)
 	seedRoles(db)
 
 	// ---------- Infra ----------
-	kafkaProducer := queue.NewProducer(cfg.KafkaBroker, cfg.KafkaTopic)
-	cld, err := cloudinary.New()
-	if err != nil {
-		log.Fatalf("cloudinary init error: %v", err)
-	}
-	iappClient := iapp.New(cfg.IAppApiKey)
-	up := cloudinary.NewCloudinaryUploader(cld)
+	_ = queue.NewProducer(cfg.KafkaBroker, cfg.KafkaTopic)
 
 	// ---------- Repositories ----------
 	userRepo := repository.NewUserRepository(db)
@@ -79,25 +82,9 @@ func StartServer(cfg config.Config) {
 		roleRepo,
 		userRoleRepo,
 		iappClient,
-		up,
-	)
-
-	// ---------- Handler ----------
-	userHandler := handlers.NewUserHandler(
-		userSvc,
-		cld,
-	)
-	userHandler.SetupRoutes(app)
-
-	// ---------- Health ----------
-	app.Get("/", func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{"status": "ok"})
-	})
-
-	// ---------- Listen ----------
-	addr := cfg.ServerPort
-	log.Println("listening on", addr)
-	log.Fatal(app.Listen(addr))
+		_ = handlers.NewUserHandler
+	_ = iapp.New
+	_ = cloudinary.New
 }
 
 func seedRoles(db *gorm.DB) {
