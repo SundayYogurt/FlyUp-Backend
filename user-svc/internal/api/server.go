@@ -34,8 +34,6 @@ func StartServer(cfg config.Config) {
 	}
 	log.Println("database connected")
 
-	seedRoles(db)
-
 	// ---------- MIGRATION ----------
 	if err := db.AutoMigrate(
 		&domain.User{},
@@ -50,6 +48,9 @@ func StartServer(cfg config.Config) {
 		log.Fatalf("migration error: %v", err)
 	}
 	log.Println("migration successful")
+
+	// seed roles AFTER migration (roles table now exists)
+	seedRoles(db)
 
 	// ---------- Infra ----------
 	kafkaProducer := queue.NewProducer(cfg.KafkaBroker, cfg.KafkaTopic)
