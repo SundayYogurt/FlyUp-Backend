@@ -62,7 +62,13 @@ func StartServer(cfg config.Config) {
 	seedRoles(db)
 
 	// ---------- Infra ----------
-	_ = queue.NewProducer(cfg.KafkaBroker, cfg.KafkaTopic)
+	kafkaProducer := queue.NewProducer(cfg.KafkaBroker, cfg.KafkaTopic)
+	cld, err := cloudinary.New()
+	if err != nil {
+		log.Fatalf("cloudinary init error: %v", err)
+	}
+	iappClient := iapp.New(cfg.IAppApiKey)
+	up := cloudinary.NewCloudinaryUploader(cld)
 
 	// ---------- Repositories ----------
 	userRepo := repository.NewUserRepository(db)
@@ -82,9 +88,22 @@ func StartServer(cfg config.Config) {
 		roleRepo,
 		userRoleRepo,
 		iappClient,
-		_ = handlers.NewUserHandler
-	_ = iapp.New
-	_ = cloudinary.New
+		up,
+	)
+
+	// ---------- Handler ----------
+	userHandler := handlers.NewUserHandler(userSvc, cld)
+	userHandler.SetupRoutes(app)
+
+	// ---------- Health ----------
+	app.Get("/", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{"status": "ok"})
+	})
+
+	// ---------- Listen ----------
+	addr := cfg.ServerPort
+	log.Println("listening on", addr)
+	log.Fatal(app.Listen(addr))
 }
 
 func seedRoles(db *gorm.DB) {
