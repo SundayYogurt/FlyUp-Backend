@@ -17,12 +17,24 @@ type Config struct {
 }
 
 func LoadConfig() Config {
+	wd, _ := os.Getwd()
+	log.Println("WD =", wd)
+
+	// เช็คว่ามีไฟล์ .env ไหม
+	if _, err := os.Stat(".env"); err != nil {
+		log.Println(".env not found at WD:", err)
+	} else {
+		log.Println(".env found")
+	}
+
 	if os.Getenv("ENV") != "prod" {
-		err := godotenv.Load()
+		err := godotenv.Overload() // ใช้ Overload ให้ชัวร์
 		if err != nil {
-			log.Println("Warning: env file not found or could not be loaded")
+			log.Println("Warning: env file not found or could not be loaded:", err)
 		}
 	}
+
+	log.Println("IAPP_API_KEY =", os.Getenv("IAPP_API_KEY"))
 
 	return Config{
 		ServerPort:    os.Getenv("SERVER_PORT"),

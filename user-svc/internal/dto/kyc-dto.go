@@ -1,12 +1,10 @@
 package dto
 
-type KYCRequest struct {
-	Documents []KYCDocumentInput `json:"documents" validate:"required,min=1,dive"`
-}
-
-type KYCDocumentInput struct {
-	DocType string `json:"doc_type" validate:"required,oneof=id_card student_card selfie other"`
-	FileURL string `json:"file_url" validate:"required,uri"`
+type KYCSubmitResponse struct {
+	KYCID        uint    `json:"kyc_id"`
+	Status       string  `json:"status"`
+	OCRProvider  *string `json:"ocr_provider,omitempty"`
+	AutoApproved bool    `json:"auto_approved"`
 }
 
 type KYCStatusResponse struct {
@@ -37,4 +35,21 @@ type ApproveKYCRequest struct {
 
 type RejectKYCRequest struct {
 	Reason string `json:"reason" validate:"required"`
+}
+
+type KYCSubmitFiles struct {
+	IDFront FileBytes   // required
+	Selfie  *FileBytes  // optional (หรือบังคับ ถ้าคุณเลือก)
+	Others  []TypedFile // optional
+}
+
+type FileBytes struct {
+	Filename string
+	Bytes    []byte
+}
+
+type TypedFile struct {
+	DocType  string // other
+	Filename string
+	Bytes    []byte
 }

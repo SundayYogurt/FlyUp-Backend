@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/SundayYogurt/user_service/internal/api/rest/middleware"
-	"github.com/SundayYogurt/user_service/internal/clients/iapp"
 	"github.com/SundayYogurt/user_service/internal/domain"
 	"github.com/SundayYogurt/user_service/internal/dto"
 	"github.com/SundayYogurt/user_service/internal/services"
@@ -18,15 +17,15 @@ import (
 )
 
 type UserHandler struct {
-	svc  services.UserService
-	cld  *cloudinary.Cloudinary
-	iapp *iapp.Client
+	svc services.UserService
+	cld *cloudinary.Cloudinary
 }
 
-func NewUserHandler(svc services.UserService, cld *cloudinary.Cloudinary, iappClient *iapp.Client) *UserHandler {
-	return &UserHandler{svc: svc, cld: cld, iapp: iappClient}
+func NewUserHandler(svc services.UserService, cld *cloudinary.Cloudinary) *UserHandler {
+	return &UserHandler{svc: svc, cld: cld}
 }
 
+// Routes
 func (h *UserHandler) SetupRoutes(app *fiber.App) {
 	api := app.Group("/api/v1/users")
 
@@ -36,224 +35,354 @@ func (h *UserHandler) SetupRoutes(app *fiber.App) {
 	api.Post("/forgot-password", h.ForgotPassword)
 	api.Post("/reset-password", h.SetPassword)
 	api.Post("/verify-email", h.VerifyEmail)
-	// upload student card (pioneer)
-	api.Post("/uploads/student-card", h.UploadStudentCard)
-	// protected (ต้องมี token)
-	api.Use(middleware.AuthMiddleware())
 
-	api.Get("/me", h.Me)
-	api.Put("/profile/:userID", h.UpdateProfile)
-	api.Post("/:userID/pioneer/verify", h.SubmitPioneerVerification)
-	api.Post("/uploads/kyc", h.UploadKYCFile)
-	api.Post("/:userID/kyc", h.SubmitKYC)
-	api.Get("/:userID/kyc/status", h.GetKYCStatus)
+	// protected
+	auth := api.Group("/", middleware.AuthMiddleware())
+	auth.Get("/me", h.Me)
+	auth.Patch("/profile/:userID", h.UpdateProfile)
 
-	// admin-only (ต้องมี token + ต้องเป็น admin)
-	api.Use(middleware.AdminOnly(h.svc))
+	// booster kyc
+	booster := auth.Group("/booster", middleware.BoosterOnly(h.svc))
+	booster.Post("/kyc/submit", h.SubmitKYCMultipart)
+	booster.Get("/kyc/status", h.GetMyKYCStatus)
 
-	api.Patch("/:userID/status", h.SetStatus)
-	api.Put("/:userID/roles", h.SetRoles)
-	api.Post("/:userID/pioneer/approve", h.ApprovePioneer)
-	api.Post("/:userID/pioneer/reject", h.RejectPioneer)
-	api.Get("/pioneer/pending", h.ListPendingPioneerVerifications)
-	api.Post("/universities/create", h.CreateUniversity)
+	// pioneer
+	pioneer := auth.Group("/pioneer", middleware.PioneerOnly(h.svc))
+	pioneer.Post("/:userID/pioneer/verify", h.SubmitPioneerVerification)
+	pioneer.Post("/uploads/student-card", h.UploadStudentCard)
+
+	// admin only (แยก group)
+	admin := auth.Group("/admin", middleware.AdminOnly(h.svc))
+	admin.Patch("/:userID/status", h.SetStatus)
+	admin.Put("/:userID/roles", h.SetRoles)
+	admin.Post("/:userID/pioneer/approve", h.ApprovePioneer)
+	admin.Post("/:userID/pioneer/reject", h.RejectPioneer)
+	admin.Get("/pioneer/pending", h.ListPendingPioneerVerifications)
+	admin.Post("/universities/create", h.CreateUniversity)
 }
 
-func (h *UserHandler) Register(ctx *fiber.Ctx) error {
-	var requestBody dto.RegisterRequest
-	if err := ctx.BodyParser(&requestBody); err != nil {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "Please provide valid inputs")
+//Auth
+
+func (h *UserHandler) Register(c *fiber.Ctx) error {
+	var req dto.RegisterRequest
+	if err := c.BodyParser(&req); err != nil {
+		return utils.ResponseError(c, 400, "invalid input")
+	}
+	if err := h.svc.Register(req); err != nil {
+		return utils.ResponseError(c, 400, err.Error())
 	}
 
-	if requestBody.Email == "" || requestBody.Password == "" {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "Please provide valid inputs")
-	}
-
-	if err := h.svc.Register(requestBody); err != nil {
-		return utils.ResponseError(ctx, fiber.StatusInternalServerError, err.Error())
-	}
-
-	if requestBody.Role == "PIONEER" {
-		return ctx.Status(fiber.StatusCreated).JSON(fiber.Map{
-			"message": "Registration successful. Your pioneer account is pending verification.",
+	// ข้อความให้ FE แยกกรณี pioneer ได้
+	if strings.ToUpper(strings.TrimSpace(req.Role)) == "PIONEER" {
+		return utils.ResponseSuccess(c, 201, fiber.Map{
+			"message": "registered. please verify email and wait for admin approval",
 			"status":  "PENDING_VERIFICATION",
 		})
 	}
 
-	return utils.ResponseSuccess(ctx, fiber.StatusOK, "User registered successfully")
+	return utils.ResponseSuccess(c, 201, "registered. please verify email")
 }
 
-func (h *UserHandler) Login(ctx *fiber.Ctx) error {
-	var requestBody dto.UserLogin
-	if err := ctx.BodyParser(&requestBody); err != nil {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "email and password are required")
+func (h *UserHandler) Login(c *fiber.Ctx) error {
+	var req dto.UserLogin
+	if err := c.BodyParser(&req); err != nil {
+		return utils.ResponseError(c, 400, "invalid input")
 	}
 
-	user, err := h.svc.Login(requestBody.Email, requestBody.Password)
+	user, err := h.svc.Login(req.Email, req.Password)
 	if err != nil {
-		return utils.ResponseError(ctx, fiber.StatusUnauthorized, err.Error())
+		return utils.ResponseError(c, 401, err.Error())
 	}
 
 	token, err := middleware.GenerateToken(int(user.ID), user.Email)
-
 	if err != nil {
-		return utils.ResponseError(ctx, fiber.StatusInternalServerError, "could not generate token")
+		return utils.ResponseError(c, 500, "could not generate token")
 	}
-	return utils.ResponseSuccess(ctx, fiber.StatusOK, fiber.Map{
-		"token": token,
-	})
+
+	return utils.ResponseSuccess(c, 200, fiber.Map{"token": token})
 }
 
-func (h *UserHandler) ForgotPassword(ctx *fiber.Ctx) error {
-	var requestBody struct {
+func (h *UserHandler) ForgotPassword(c *fiber.Ctx) error {
+	var req struct {
 		Email string `json:"email"`
 	}
-
-	if err := ctx.BodyParser(&requestBody); err != nil {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "Please provide valid email id")
+	if err := c.BodyParser(&req); err != nil {
+		return utils.ResponseError(c, 400, "invalid email")
 	}
 
-	if err := h.svc.ForgotPassword(requestBody.Email); err != nil {
-		return utils.ResponseError(ctx, fiber.StatusInternalServerError, err.Error())
+	if err := h.svc.ForgotPassword(req.Email); err != nil {
+		return utils.ResponseError(c, 400, err.Error())
 	}
-
-	return utils.ResponseSuccess(ctx, fiber.StatusOK, "Password reset link sent")
+	return utils.ResponseSuccess(c, 200, "reset link sent")
 }
 
-func (h *UserHandler) SetPassword(ctx *fiber.Ctx) error {
-	var requestBody struct {
-		Token    string `json:"token"`
-		Password string `json:"password"`
+func (h *UserHandler) SetPassword(c *fiber.Ctx) error {
+	var req dto.SetPasswordRequest
+	if err := c.BodyParser(&req); err != nil {
+		return utils.ResponseError(c, 400, "invalid json body (check Content-Type: application/json)")
 	}
 
-	if err := ctx.BodyParser(&requestBody); err != nil || requestBody.Token == "" || requestBody.Password == "" {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "Please provide valid input")
+	if strings.TrimSpace(req.Token) == "" || strings.TrimSpace(req.NewPassword) == "" {
+		return utils.ResponseError(c, 400, "token and new_password are required")
 	}
 
-	if err := h.svc.SetPassword(requestBody.Token, requestBody.Password); err != nil {
-		return utils.ResponseError(ctx, fiber.StatusInternalServerError, err.Error())
+	if err := h.svc.SetPassword(req); err != nil {
+		return utils.ResponseError(c, 400, err.Error())
 	}
 
-	return utils.ResponseSuccess(ctx, fiber.StatusOK, "Password reset successfully")
+	return utils.ResponseSuccess(c, 200, "password updated")
 }
 
-func (h *UserHandler) Authorize(ctx *fiber.Ctx) error {
-	user, err := h.svc.Authenticate(ctx)
-	if err != nil {
-		return utils.ResponseError(ctx, fiber.StatusUnauthorized, "unauthorized")
+func (h *UserHandler) VerifyEmail(c *fiber.Ctx) error {
+	var req dto.VerifyEmailRequest
+	if err := c.BodyParser(&req); err != nil || strings.TrimSpace(req.Token) == "" {
+		return utils.ResponseError(c, 400, "token required")
 	}
-	return utils.ResponseSuccess(ctx, fiber.StatusOK, fiber.Map{
-		"authenticated": true,
-		"user":          user,
-	})
+
+	if err := h.svc.VerifyEmail(req.Token); err != nil {
+		return utils.ResponseError(c, 400, err.Error())
+	}
+	return utils.ResponseSuccess(c, 200, "email verified")
 }
 
-func (h *UserHandler) Me(ctx *fiber.Ctx) error {
-	userID := ctx.Locals("userID").(uint)
+//Profile
+
+func (h *UserHandler) Me(c *fiber.Ctx) error {
+	userID, ok := c.Locals("userID").(uint)
+	if !ok || userID == 0 {
+		return utils.ResponseError(c, 401, "unauthorized")
+	}
 
 	user, err := h.svc.GetProfile(userID)
-
 	if err != nil {
-		return utils.ResponseError(ctx, fiber.StatusInternalServerError, err.Error())
+		return utils.ResponseError(c, 404, err.Error())
 	}
-
-	return utils.ResponseSuccess(ctx, fiber.StatusOK, fiber.Map{
-		"user": user,
-	})
+	return utils.ResponseSuccess(c, 200, fiber.Map{"user": user})
 }
 
-func (h *UserHandler) GetProfile(ctx *fiber.Ctx) error {
-	paramID, err := ctx.ParamsInt("userID")
+func (h *UserHandler) UpdateProfile(c *fiber.Ctx) error {
+	authID, ok := c.Locals("userID").(uint)
+	if !ok || authID == 0 {
+		return utils.ResponseError(c, 401, "unauthorized")
+	}
 
+	paramID, err := c.ParamsInt("userID")
 	if err != nil || paramID <= 0 {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "invalid user id")
+		return utils.ResponseError(c, 400, "invalid user id")
 	}
-	profile, err := h.svc.GetProfile(uint(paramID))
+	targetID := uint(paramID)
 
-	if err != nil {
-		return utils.ResponseError(ctx, fiber.StatusInternalServerError, err.Error())
-	}
-
-	return utils.ResponseSuccess(ctx, fiber.StatusOK, profile)
-}
-
-func (h *UserHandler) UpdateProfile(ctx *fiber.Ctx) error {
-	// auth user from token
-	authUserID, ok := ctx.Locals("userID").(uint)
-	if !ok || authUserID == 0 {
-		return utils.ResponseError(ctx, fiber.StatusUnauthorized, "unauthorized")
+	if authID != targetID {
+		return utils.ResponseError(c, 403, "forbidden")
 	}
 
-	// target user from param
-	paramID, err := ctx.ParamsInt("userID")
-	if err != nil || paramID <= 0 {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "invalid user id")
-	}
-	targetUserID := uint(paramID)
-
-	// permission: allow only self (เพิ่ม role admin ได้ทีหลัง)
-	if targetUserID != authUserID {
-		return utils.ResponseError(ctx, fiber.StatusForbidden, "forbidden")
-	}
-
-	// parse body
 	var req dto.UpdateUserProfile
-	if err := ctx.BodyParser(&req); err != nil {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "Please provide valid inputs")
+	if err := c.BodyParser(&req); err != nil {
+		return utils.ResponseError(c, 400, "invalid input")
 	}
 
-	updated, err := h.svc.UpdateProfile(targetUserID, req)
+	user, err := h.svc.UpdateProfile(targetID, req)
 	if err != nil {
-		return utils.ResponseError(ctx, fiber.StatusInternalServerError, err.Error())
+		return utils.ResponseError(c, 400, err.Error())
 	}
-
-	return utils.ResponseSuccess(ctx, fiber.StatusOK, fiber.Map{
-		"user": updated,
-	})
+	return utils.ResponseSuccess(c, 200, fiber.Map{"user": user})
 }
 
-func (h *UserHandler) SetStatus(ctx *fiber.Ctx) error {
-	paramID, err := ctx.ParamsInt("userID")
-	if err != nil || paramID <= 0 {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "invalid user id")
+//Pioneer Verification
+
+func (h *UserHandler) SubmitPioneerVerification(c *fiber.Ctx) error {
+	authID, ok := c.Locals("userID").(uint)
+	if !ok || authID == 0 {
+		return utils.ResponseError(c, 401, "unauthorized")
 	}
-	targetUserID := uint(paramID)
+
+	paramID, err := c.ParamsInt("userID")
+	if err != nil || paramID <= 0 {
+		return utils.ResponseError(c, 400, "invalid user id")
+	}
+	targetID := uint(paramID)
+
+	if authID != targetID {
+		return utils.ResponseError(c, 403, "forbidden")
+	}
+
+	var req dto.PioneerInput
+	if err := c.BodyParser(&req); err != nil {
+		return utils.ResponseError(c, 400, "invalid input")
+	}
+
+	if strings.TrimSpace(req.StudentCode) == "" ||
+		strings.TrimSpace(req.Faculty) == "" ||
+		strings.TrimSpace(req.Major) == "" ||
+		strings.TrimSpace(req.YearLevel) == "" ||
+		req.StudentCardURL == nil || strings.TrimSpace(*req.StudentCardURL) == "" {
+		return utils.ResponseError(c, 400, "missing required fields")
+	}
+
+	if err := h.svc.SubmitPioneerVerification(targetID, req); err != nil {
+		return utils.ResponseError(c, 400, err.Error())
+	}
+
+	return utils.ResponseSuccess(c, 200, "pioneer verification submitted")
+}
+
+//KYC (Multipart)
+
+func (h *UserHandler) SubmitKYCMultipart(c *fiber.Ctx) error {
+	userID, ok := c.Locals("userID").(uint)
+	if !ok || userID == 0 {
+		return utils.ResponseError(c, 401, "unauthorized")
+	}
+
+	// id_front (required)
+	idFile, err := c.FormFile("id_front")
+	if err != nil || idFile == nil {
+		return utils.ResponseError(c, 400, "id_front required")
+	}
+	if !isAllowedImageExt(idFile.Filename) {
+		return utils.ResponseError(c, 400, "id_front must be jpg/jpeg/png/webp")
+	}
+
+	idSrc, err := idFile.Open()
+	if err != nil {
+		return utils.ResponseError(c, 400, "cannot open id_front")
+	}
+	defer idSrc.Close()
+
+	idBytes, err := utils.ReadAllLimit(idSrc, 12*1024*1024)
+	if err != nil {
+		return utils.ResponseError(c, 400, "id_front too large or invalid")
+	}
+
+	// selfie (REQUIRED) เพราะ service ใหม่ใช้ VerifyFaceAndIDCard อย่างเดียว
+	sf, err := c.FormFile("selfie")
+	if err != nil || sf == nil {
+		return utils.ResponseError(c, 400, "selfie required")
+	}
+	if !isAllowedImageExt(sf.Filename) {
+		return utils.ResponseError(c, 400, "selfie must be jpg/jpeg/png/webp")
+	}
+
+	sSrc, err := sf.Open()
+	if err != nil {
+		return utils.ResponseError(c, 400, "cannot open selfie")
+	}
+	defer sSrc.Close()
+
+	sb, err := utils.ReadAllLimit(sSrc, 12*1024*1024)
+	if err != nil {
+		return utils.ResponseError(c, 400, "selfie too large or invalid")
+	}
+
+	selfie := &dto.FileBytes{Filename: sf.Filename, Bytes: sb}
+
+	// others (optional multiple)
+	form, _ := c.MultipartForm()
+	others := make([]dto.TypedFile, 0)
+
+	if form != nil && form.File != nil {
+		if files, ok := form.File["others"]; ok && len(files) > 0 {
+			for i, f := range files {
+				_ = i
+
+				if f == nil {
+					continue
+				}
+				if !isAllowedImageExt(f.Filename) {
+					return utils.ResponseError(c, 400, "others must be jpg/jpeg/png/webp")
+				}
+
+				src, err := f.Open()
+				if err != nil {
+					return utils.ResponseError(c, 400, "cannot open others file")
+				}
+
+				b, rerr := utils.ReadAllLimit(src, 12*1024*1024)
+				_ = src.Close()
+
+				if rerr != nil {
+					return utils.ResponseError(c, 400, "others file too large or invalid")
+				}
+
+				others = append(others, dto.TypedFile{
+					DocType:  string(domain.KYCDocTypeOther), // หรือ "other"
+					Filename: f.Filename,
+					Bytes:    b,
+				})
+			}
+		}
+	}
+
+	input := dto.KYCSubmitFiles{
+		IDFront: dto.FileBytes{Filename: idFile.Filename, Bytes: idBytes},
+		Selfie:  selfie,
+		Others:  others,
+	}
+
+	resp, err := h.svc.SubmitKYCMultipart(c.Context(), userID, input)
+	if err != nil {
+		return utils.ResponseError(c, 400, err.Error())
+	}
+
+	return utils.ResponseSuccess(c, 200, resp)
+}
+
+func (h *UserHandler) GetMyKYCStatus(c *fiber.Ctx) error {
+	userID, ok := c.Locals("userID").(uint)
+	if !ok || userID == 0 {
+		return utils.ResponseError(c, 401, "unauthorized")
+	}
+
+	status, err := h.svc.GetKYCStatus(userID)
+	if err != nil {
+		return utils.ResponseError(c, 404, err.Error())
+	}
+
+	return utils.ResponseSuccess(c, 200, status)
+}
+
+//Admin
+
+func (h *UserHandler) SetStatus(c *fiber.Ctx) error {
+	paramID, err := c.ParamsInt("userID")
+	if err != nil || paramID <= 0 {
+		return utils.ResponseError(c, 400, "invalid user id")
+	}
+	targetID := uint(paramID)
 
 	var req struct {
 		Status string `json:"status"`
 	}
-	if err := ctx.BodyParser(&req); err != nil {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "Please provide valid inputs")
+	if err := c.BodyParser(&req); err != nil {
+		return utils.ResponseError(c, 400, "invalid input")
 	}
 	if strings.TrimSpace(req.Status) == "" {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "status is required")
+		return utils.ResponseError(c, 400, "status required")
 	}
 
-	if err := h.svc.SetStatus(targetUserID, req.Status); err != nil {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, err.Error())
+	if err := h.svc.SetStatus(targetID, req.Status); err != nil {
+		return utils.ResponseError(c, 400, err.Error())
 	}
-
-	return utils.ResponseSuccess(ctx, fiber.StatusOK, "status updated")
+	return utils.ResponseSuccess(c, 200, "status updated")
 }
 
-func (h *UserHandler) SetRoles(ctx *fiber.Ctx) error {
-	paramID, err := ctx.ParamsInt("userID")
+func (h *UserHandler) SetRoles(c *fiber.Ctx) error {
+	paramID, err := c.ParamsInt("userID")
 	if err != nil || paramID <= 0 {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "invalid user id")
+		return utils.ResponseError(c, 400, "invalid user id")
 	}
-	targetUserID := uint(paramID)
+	targetID := uint(paramID)
 
 	var req struct {
 		Roles []string `json:"roles"`
 	}
-	if err := ctx.BodyParser(&req); err != nil {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "Please provide valid inputs")
+	if err := c.BodyParser(&req); err != nil {
+		return utils.ResponseError(c, 400, "invalid input")
 	}
 	if len(req.Roles) == 0 {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "roles are required")
+		return utils.ResponseError(c, 400, "roles required")
 	}
 
-	// normalize roles
 	clean := make([]string, 0, len(req.Roles))
 	for _, r := range req.Roles {
 		r = strings.TrimSpace(strings.ToUpper(r))
@@ -262,116 +391,76 @@ func (h *UserHandler) SetRoles(ctx *fiber.Ctx) error {
 		}
 	}
 	if len(clean) == 0 {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "roles are required")
+		return utils.ResponseError(c, 400, "roles required")
 	}
 
-	if err := h.svc.SetRoles(targetUserID, clean); err != nil {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, err.Error())
+	if err := h.svc.SetRoles(targetID, clean); err != nil {
+		return utils.ResponseError(c, 400, err.Error())
 	}
-
-	return utils.ResponseSuccess(ctx, fiber.StatusOK, "roles updated")
+	return utils.ResponseSuccess(c, 200, "roles updated")
 }
 
-func (h *UserHandler) SubmitPioneerVerification(ctx *fiber.Ctx) error {
-	authUserID, ok := ctx.Locals("userID").(uint)
-	if !ok || authUserID == 0 {
-		return utils.ResponseError(ctx, fiber.StatusUnauthorized, "unauthorized")
-	}
-
-	paramID, err := ctx.ParamsInt("userID")
-	if err != nil || paramID <= 0 {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "invalid user id")
-	}
-	targetUserID := uint(paramID)
-
-	// กันคนอื่นส่งแทน
-	if targetUserID != authUserID {
-		return utils.ResponseError(ctx, fiber.StatusForbidden, "forbidden")
-	}
-
-	var req dto.PioneerInput
-	if err := ctx.BodyParser(&req); err != nil {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "Please provide valid inputs")
-	}
-
-	// validate ขั้นต่ำ (ปรับตาม field dto ของคุณ)
-	if strings.TrimSpace(req.StudentCode) == "" ||
-		strings.TrimSpace(req.Faculty) == "" ||
-		strings.TrimSpace(req.Major) == "" ||
-		strings.TrimSpace(req.YearLevel) == "" {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "missing required fields")
-	}
-
-	if err := h.svc.SubmitPioneerVerification(targetUserID, req); err != nil {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, err.Error())
-	}
-
-	return utils.ResponseSuccess(ctx, fiber.StatusOK, "pioneer verification submitted")
-}
-
-func (h *UserHandler) ApprovePioneer(ctx *fiber.Ctx) error {
-	adminID, ok := ctx.Locals("userID").(uint)
+func (h *UserHandler) ApprovePioneer(c *fiber.Ctx) error {
+	adminID, ok := c.Locals("userID").(uint)
 	if !ok || adminID == 0 {
-		return utils.ResponseError(ctx, fiber.StatusUnauthorized, "unauthorized")
+		return utils.ResponseError(c, 401, "unauthorized")
 	}
 
-	paramID, err := ctx.ParamsInt("userID")
+	paramID, err := c.ParamsInt("userID")
 	if err != nil || paramID <= 0 {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "invalid user id")
+		return utils.ResponseError(c, 400, "invalid user id")
 	}
-	targetUserID := uint(paramID)
+	targetID := uint(paramID)
 
 	var req struct {
 		Note string `json:"note"`
 	}
-	_ = ctx.BodyParser(&req) // note optional
+	_ = c.BodyParser(&req) // optional
 
-	if err := h.svc.ApprovePioneer(targetUserID, adminID, strings.TrimSpace(req.Note)); err != nil {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, err.Error())
+	if err := h.svc.ApprovePioneer(targetID, adminID, strings.TrimSpace(req.Note)); err != nil {
+		return utils.ResponseError(c, 400, err.Error())
 	}
-
-	return utils.ResponseSuccess(ctx, fiber.StatusOK, "pioneer approved")
+	return utils.ResponseSuccess(c, 200, "pioneer approved")
 }
 
-func (h *UserHandler) RejectPioneer(ctx *fiber.Ctx) error {
-	adminID, ok := ctx.Locals("userID").(uint)
+func (h *UserHandler) RejectPioneer(c *fiber.Ctx) error {
+	adminID, ok := c.Locals("userID").(uint)
 	if !ok || adminID == 0 {
-		return utils.ResponseError(ctx, fiber.StatusUnauthorized, "unauthorized")
+		return utils.ResponseError(c, 401, "unauthorized")
 	}
 
-	paramID, err := ctx.ParamsInt("userID")
+	paramID, err := c.ParamsInt("userID")
 	if err != nil || paramID <= 0 {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "invalid user id")
+		return utils.ResponseError(c, 400, "invalid user id")
 	}
-	targetUserID := uint(paramID)
+	targetID := uint(paramID)
 
 	var req struct {
 		Reason string `json:"reason"`
 	}
-	if err := ctx.BodyParser(&req); err != nil {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "Please provide valid inputs")
+	if err := c.BodyParser(&req); err != nil {
+		return utils.ResponseError(c, 400, "invalid input")
 	}
 	if strings.TrimSpace(req.Reason) == "" {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "reason is required")
+		return utils.ResponseError(c, 400, "reason required")
 	}
 
-	if err := h.svc.RejectPioneer(targetUserID, adminID, strings.TrimSpace(req.Reason)); err != nil {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, err.Error())
+	if err := h.svc.RejectPioneer(targetID, adminID, strings.TrimSpace(req.Reason)); err != nil {
+		return utils.ResponseError(c, 400, err.Error())
 	}
-
-	return utils.ResponseSuccess(ctx, fiber.StatusOK, "pioneer rejected")
+	return utils.ResponseSuccess(c, 200, "pioneer rejected")
 }
 
-func (h *UserHandler) ListPendingPioneerVerifications(ctx *fiber.Ctx) error {
+func (h *UserHandler) ListPendingPioneerVerifications(c *fiber.Ctx) error {
 	limit := 20
 	offset := 0
 
-	if v := ctx.Query("limit"); v != "" {
+	if v := c.Query("limit"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 200 {
 			limit = n
 		}
 	}
-	if v := ctx.Query("offset"); v != "" {
+	if v := c.Query("offset"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			offset = n
 		}
@@ -379,230 +468,79 @@ func (h *UserHandler) ListPendingPioneerVerifications(ctx *fiber.Ctx) error {
 
 	items, err := h.svc.ListPendingPioneerVerifications(limit, offset)
 	if err != nil {
-		return utils.ResponseError(ctx, fiber.StatusInternalServerError, err.Error())
+		return utils.ResponseError(c, 500, err.Error())
 	}
 
-	return utils.ResponseSuccess(ctx, fiber.StatusOK, fiber.Map{
+	return utils.ResponseSuccess(c, 200, fiber.Map{
 		"items":  items,
 		"limit":  limit,
 		"offset": offset,
 	})
 }
 
-func (h *UserHandler) SubmitKYC(ctx *fiber.Ctx) error {
-	authUserID, ok := ctx.Locals("userID").(uint)
-	if !ok || authUserID == 0 {
-		return utils.ResponseError(ctx, fiber.StatusUnauthorized, "unauthorized")
-	}
-
-	paramID, err := ctx.ParamsInt("userID")
-	if err != nil || paramID <= 0 {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "invalid user id")
-	}
-	targetUserID := uint(paramID)
-
-	if targetUserID != authUserID {
-		return utils.ResponseError(ctx, fiber.StatusForbidden, "forbidden")
-	}
-
-	var req dto.KYCRequest
-	if err := ctx.BodyParser(&req); err != nil {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "Please provide valid inputs")
-	}
-	if len(req.Documents) == 0 {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "documents are required")
-	}
-
-	// basic validate
-	for _, d := range req.Documents {
-		if strings.TrimSpace(d.DocType) == "" || strings.TrimSpace(d.FileURL) == "" {
-			return utils.ResponseError(ctx, fiber.StatusBadRequest, "doc_type and file_url are required")
-		}
-	}
-
-	if err := h.svc.SubmitKYC(targetUserID, req); err != nil {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, err.Error())
-	}
-
-	return utils.ResponseSuccess(ctx, fiber.StatusOK, "kyc submitted")
-}
-
-func (h *UserHandler) GetKYCStatus(ctx *fiber.Ctx) error {
-	authUserID, ok := ctx.Locals("userID").(uint)
-	if !ok || authUserID == 0 {
-		return utils.ResponseError(ctx, fiber.StatusUnauthorized, "unauthorized")
-	}
-
-	paramID, err := ctx.ParamsInt("userID")
-	if err != nil || paramID <= 0 {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "invalid user id")
-	}
-	targetUserID := uint(paramID)
-
-	if targetUserID != authUserID {
-		return utils.ResponseError(ctx, fiber.StatusForbidden, "forbidden")
-	}
-
-	status, err := h.svc.GetKYCStatus(targetUserID)
-	if err != nil {
-		return utils.ResponseError(ctx, fiber.StatusInternalServerError, err.Error())
-	}
-
-	return utils.ResponseSuccess(ctx, fiber.StatusOK, status)
-}
-
-func (h *UserHandler) EnsureUserCanInvest(ctx *fiber.Ctx) error {
-	authUserID, ok := ctx.Locals("userID").(uint)
-	if !ok || authUserID == 0 {
-		return utils.ResponseError(ctx, fiber.StatusUnauthorized, "unauthorized")
-	}
-
-	paramID, err := ctx.ParamsInt("userID")
-	if err != nil || paramID <= 0 {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "invalid user id")
-	}
-	targetUserID := uint(paramID)
-
-	if targetUserID != authUserID {
-		return utils.ResponseError(ctx, fiber.StatusForbidden, "forbidden")
-	}
-
-	projectOwnerStr := ctx.Query("projectOwnerID")
-	if strings.TrimSpace(projectOwnerStr) == "" {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "projectOwnerID is required")
-	}
-	projectOwnerInt, err := strconv.Atoi(projectOwnerStr)
-	if err != nil || projectOwnerInt <= 0 {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "invalid projectOwnerID")
-	}
-	projectOwnerID := uint(projectOwnerInt)
-
-	if err := h.svc.EnsureUserCanInvest(targetUserID, projectOwnerID); err != nil {
-		return utils.ResponseError(ctx, fiber.StatusForbidden, err.Error())
-	}
-
-	return utils.ResponseSuccess(ctx, fiber.StatusOK, fiber.Map{
-		"can_invest": true,
-	})
-}
-
-func (h *UserHandler) UploadKYCFile(ctx *fiber.Ctx) error {
-	userID, ok := ctx.Locals("userID").(uint)
-	if !ok || userID == 0 {
-		return utils.ResponseError(ctx, fiber.StatusUnauthorized, "unauthorized")
-	}
-
-	file, err := ctx.FormFile("file")
-	if err != nil {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "file is required")
-	}
-
-	ext := strings.ToLower(filepath.Ext(file.Filename))
-	if ext != ".jpg" && ext != ".jpeg" && ext != ".png" && ext != ".webp" {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "only jpg/jpeg/png/webp are allowed")
-	}
-
-	// doc_type optional
-	docType := strings.TrimSpace(strings.ToLower(ctx.FormValue("doc_type")))
-	switch docType {
-	case domain.KYCDocTypeIDCard, domain.KYCDocTypeStudentCard, domain.KYCDocTypeSelfie, domain.KYCDocTypeOther:
-		// ok
-	case "":
-		docType = domain.KYCDocTypeOther
-	default:
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "invalid doc_type")
-	}
-
-	src, err := file.Open()
-	if err != nil {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "cannot open file")
-	}
-	defer src.Close()
-
-	uploadRes, err := h.cld.Upload.Upload(
-		context.Background(),
-		src,
-		uploader.UploadParams{
-			Folder: "kyc/user_" + strconv.Itoa(int(userID)) + "/" + docType,
-		},
-	)
-	if err != nil || uploadRes.SecureURL == "" {
-		return utils.ResponseError(ctx, fiber.StatusInternalServerError, "upload failed")
-	}
-
-	return utils.ResponseSuccess(ctx, fiber.StatusOK, fiber.Map{
-		"url":       uploadRes.SecureURL,
-		"public_id": uploadRes.PublicID,
-	})
-}
-
-func (h *UserHandler) VerifyEmail(ctx *fiber.Ctx) error {
-	var req dto.VerifyEmailRequest
-
-	if err := ctx.BodyParser(&req); err != nil || strings.TrimSpace(req.Token) == "" {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "token is required")
-	}
-
-	if err := h.svc.VerifyEmail(req.Token); err != nil {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, err.Error())
-	}
-
-	return utils.ResponseSuccess(ctx, fiber.StatusOK, "email verified")
-}
-
-func (h *UserHandler) CreateUniversity(ctx *fiber.Ctx) error {
-	adminID, ok := ctx.Locals("userID").(uint)
+func (h *UserHandler) CreateUniversity(c *fiber.Ctx) error {
+	adminID, ok := c.Locals("userID").(uint)
 	if !ok || adminID == 0 {
-		return utils.ResponseError(ctx, fiber.StatusUnauthorized, "unauthorized")
+		return utils.ResponseError(c, 401, "unauthorized")
 	}
 
 	var req dto.UniversityCreateRequest
-	if err := ctx.BodyParser(&req); err != nil {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "Please provide valid inputs")
+	if err := c.BodyParser(&req); err != nil {
+		return utils.ResponseError(c, 400, "invalid input")
 	}
 
 	if err := h.svc.CreateUniversity(adminID, req); err != nil {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, err.Error())
+		return utils.ResponseError(c, 400, err.Error())
 	}
-
-	return utils.ResponseSuccess(ctx, fiber.StatusOK, "university created")
+	return utils.ResponseSuccess(c, 200, "university created")
 }
 
-func (h *UserHandler) UploadStudentCard(ctx *fiber.Ctx) error {
-	file, err := ctx.FormFile("file")
+//Upload: Student Card
+
+func (h *UserHandler) UploadStudentCard(c *fiber.Ctx) error {
+	file, err := c.FormFile("file")
 	if err != nil {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "file is required")
+		return utils.ResponseError(c, 400, "file required")
 	}
 
 	ext := strings.ToLower(filepath.Ext(file.Filename))
 	if ext != ".jpg" && ext != ".jpeg" && ext != ".png" && ext != ".webp" {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "only jpg/jpeg/png/webp allowed")
+		return utils.ResponseError(c, 400, "only jpg/jpeg/png/webp allowed")
 	}
 
 	const maxSize = 5 * 1024 * 1024
 	if file.Size > maxSize {
-		return utils.ResponseError(ctx, fiber.StatusBadRequest, "file too large (max 5MB)")
+		return utils.ResponseError(c, 400, "file too large (max 5MB)")
 	}
 
 	src, err := file.Open()
 	if err != nil {
-		return utils.ResponseError(ctx, fiber.StatusInternalServerError, "cannot open file")
+		return utils.ResponseError(c, 400, "cannot open file")
 	}
 	defer src.Close()
 
-	uploadRes, err := h.cld.Upload.Upload(
+	res, err := h.cld.Upload.Upload(
 		context.Background(),
 		src,
-		uploader.UploadParams{
-			Folder: "flyup/student_cards",
-		},
+		uploader.UploadParams{Folder: "flyup/student_cards"},
 	)
-	if err != nil || uploadRes.SecureURL == "" {
-		return utils.ResponseError(ctx, fiber.StatusInternalServerError, "upload failed")
+	if err != nil || res.SecureURL == "" {
+		return utils.ResponseError(c, 500, "upload failed")
 	}
 
-	return utils.ResponseSuccess(ctx, fiber.StatusOK, fiber.Map{
-		"url":       uploadRes.SecureURL,
-		"public_id": uploadRes.PublicID,
+	return utils.ResponseSuccess(c, 200, fiber.Map{
+		"url":       res.SecureURL,
+		"public_id": res.PublicID,
 	})
+}
+
+// Helpers
+func isAllowedImageExt(filename string) bool {
+	ext := strings.ToLower(filepath.Ext(filename))
+	switch ext {
+	case ".jpg", ".jpeg", ".png", ".webp":
+		return true
+	default:
+		return false
+	}
 }

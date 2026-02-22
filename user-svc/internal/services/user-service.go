@@ -1,12 +1,15 @@
 package services
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"time"
 
+	"github.com/SundayYogurt/user_service/internal/clients/iapp"
 	"github.com/SundayYogurt/user_service/internal/domain"
 	"github.com/SundayYogurt/user_service/internal/dto"
 	"github.com/SundayYogurt/user_service/internal/interfaces"
@@ -14,6 +17,7 @@ import (
 	"github.com/SundayYogurt/user_service/pkg/utils"
 	"github.com/gofiber/fiber/v2"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 )
 
 type UserService interface {
@@ -22,7 +26,7 @@ type UserService interface {
 	Login(email, password string) (*domain.User, error)
 	Authenticate(c *fiber.Ctx) (*domain.User, error)
 	ForgotPassword(email string) error
-	SetPassword(token, newPassword string) error
+	SetPassword(input dto.SetPasswordRequest) error
 	VerifyEmail(token string) error
 
 	// Profile
@@ -33,6 +37,7 @@ type UserService interface {
 	SetStatus(userID uint, status string) error
 	SetRoles(userID uint, roles []string) error
 	IsAdmin(userID uint) (bool, error)
+
 	CreateUniversity(adminID uint, input dto.UniversityCreateRequest) error
 
 	// Pioneer Verification
@@ -40,10 +45,15 @@ type UserService interface {
 	ApprovePioneer(userID uint, adminID uint, note string) error
 	RejectPioneer(userID uint, adminID uint, reason string) error
 	ListPendingPioneerVerifications(limit, offset int) ([]dto.PioneerResponse, error)
+	IsPioneer(userID uint) (bool, error)
 
 	// Booster Verification (KYC)
-	SubmitKYC(userID uint, input dto.KYCRequest) error
+	SubmitKYCMultipart(ctx context.Context, userID uint, input dto.KYCSubmitFiles) (*dto.KYCSubmitResponse, error)
 	GetKYCStatus(userID uint) (*dto.KYCStatusResponse, error)
+	IsBooster(userID uint) (bool, error)
+
+	// Admin KYC list
+	ListPendingKYC(limit, offset int) ([]dto.PendingKYCResponse, error)
 
 	// Authorization for investment
 	EnsureUserCanInvest(userID uint, projectOwnerID uint) error
@@ -62,7 +72,9 @@ type userService struct {
 	universityRepo repository.UniversityRepository
 
 	// kyc
-	kycRepo repository.KYCRepository
+	kycRepo  repository.KYCRepository
+	iapp     *iapp.Client
+	uploader interfaces.Uploader
 
 	// messaging
 	producer interfaces.ProducerHandler
@@ -76,6 +88,8 @@ func NewUserService(
 	universityRepo repository.UniversityRepository,
 	roleRepo repository.RoleRepository,
 	userRoleRepo repository.UserRoleRepository,
+	iappClient *iapp.Client,
+	uploader interfaces.Uploader,
 ) UserService {
 	return &userService{
 		repo:           repo,
@@ -85,18 +99,16 @@ func NewUserService(
 		universityRepo: universityRepo,
 		roleRepo:       roleRepo,
 		userRoleRepo:   userRoleRepo,
+		iapp:           iappClient,
+		uploader:       uploader,
 	}
 }
 
-/*
-Register
-- สร้าง user
-- assign role
-- ถ้า PIONEER -> สร้าง student_profile (pending) ทันที (เหมือน submit pioneer)
-- สร้าง verify-email token แล้วส่ง event (ถ้ามี producer)
-*/
+/* =========================
+   AUTH
+========================= */
+
 func (u *userService) Register(input dto.RegisterRequest) error {
-	// normalize
 	email := strings.TrimSpace(strings.ToLower(input.Email))
 	displayName := strings.TrimSpace(input.DisplayName)
 	role := strings.TrimSpace(strings.ToUpper(input.Role))
@@ -113,7 +125,9 @@ func (u *userService) Register(input dto.RegisterRequest) error {
 		if input.Pioneer == nil {
 			return errors.New("pioneer data is required")
 		}
-		// validate pioneer ขั้นต่ำ
+		if input.Pioneer.StudentCardURL == nil || strings.TrimSpace(*input.Pioneer.StudentCardURL) == "" {
+			return errors.New("student_card_url is required")
+		}
 		if strings.TrimSpace(input.Pioneer.StudentCode) == "" ||
 			strings.TrimSpace(input.Pioneer.Faculty) == "" ||
 			strings.TrimSpace(input.Pioneer.Major) == "" ||
@@ -121,7 +135,6 @@ func (u *userService) Register(input dto.RegisterRequest) error {
 			return errors.New("missing pioneer fields")
 		}
 
-		// strict: email domain ต้องอยู่ใน university table
 		emailDomain, err := utils.ExtractEmailDomain(email)
 		if err != nil {
 			return err
@@ -143,7 +156,6 @@ func (u *userService) Register(input dto.RegisterRequest) error {
 		return errors.New("failed to hash password")
 	}
 
-	// create user
 	usr := &domain.User{
 		Email:        email,
 		PasswordHash: string(hashedPassword),
@@ -156,7 +168,6 @@ func (u *userService) Register(input dto.RegisterRequest) error {
 		return errors.New("failed to create user")
 	}
 
-	// assign role -> user_roles
 	roleObj, err := u.roleRepo.FindByCode(role)
 	if err != nil {
 		return err
@@ -165,14 +176,14 @@ func (u *userService) Register(input dto.RegisterRequest) error {
 		return err
 	}
 
-	// ถ้า PIONEER -> submit pending ทันที (ใช้ helper เดียวกัน)
+	// pioneer -> pending profile
 	if role == "PIONEER" {
 		if err := u.upsertPioneerPending(usr.ID, usr.Email, *input.Pioneer); err != nil {
 			return err
 		}
 	}
 
-	// email verification token (เก็บ hash, ส่ง plain token)
+	// email verification token
 	plainToken, err := utils.RandomToken(32)
 	if err != nil {
 		return errors.New("failed to generate verification token")
@@ -188,7 +199,6 @@ func (u *userService) Register(input dto.RegisterRequest) error {
 		return err
 	}
 
-	// publish event (optional)
 	if u.producer != nil {
 		payload := fmt.Sprintf(`{"user_id":%d,"email":"%s","token":"%s","expires_at":"%s"}`,
 			usr.ID, usr.Email, plainToken, exp.Format(time.RFC3339),
@@ -199,35 +209,6 @@ func (u *userService) Register(input dto.RegisterRequest) error {
 	return nil
 }
 
-/*
-Helper: สร้าง/อัปเดต pioneer profile เป็น pending
-- strict: ต้องหา university ได้จาก email domain
-*/
-func (u *userService) upsertPioneerPending(userID uint, email string, p dto.PioneerInput) error {
-	emailDomain, err := utils.ExtractEmailDomain(email)
-	if err != nil {
-		return err
-	}
-
-	university, err := u.universityRepo.FindByDomain(emailDomain)
-	if err != nil || university == nil {
-		return errors.New("email domain is not associated with any university")
-	}
-
-	profile := &domain.StudentProfile{
-		UserID:         userID,
-		StudentCode:    strings.TrimSpace(p.StudentCode),
-		Faculty:        strings.TrimSpace(p.Faculty),
-		Major:          strings.TrimSpace(p.Major),
-		YearLevel:      strings.TrimSpace(p.YearLevel),
-		StudentCardURL: p.StudentCardURL,
-		VerifyStatus:   domain.StudentVerifyPending,
-		UniversityID:   &university.ID,
-	}
-
-	return u.studentRepo.Upsert(profile)
-}
-
 func (u *userService) Login(email, password string) (*domain.User, error) {
 	email = strings.TrimSpace(strings.ToLower(email))
 
@@ -236,27 +217,20 @@ func (u *userService) Login(email, password string) (*domain.User, error) {
 		return nil, errors.New("invalid email or password")
 	}
 
-	// 1. ต้อง verify email ก่อน
 	if user.EmailVerifiedAt == nil {
 		return nil, errors.New("please verify email")
 	}
 
-	// 2. check password
-	if err := bcrypt.CompareHashAndPassword(
-		[]byte(user.PasswordHash),
-		[]byte(password),
-	); err != nil {
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
 		return nil, errors.New("invalid email or password")
 	}
 
-	// 3. ถ้าเป็น PIONEER → ต้อง approve ก่อน
 	isPioneer, _ := u.userRoleRepo.UserHasRole(user.ID, "PIONEER")
 	if isPioneer {
 		profile, err := u.studentRepo.FindByUserID(user.ID)
 		if err != nil || profile == nil {
 			return nil, errors.New("pioneer profile not found")
 		}
-
 		if profile.VerifyStatus != domain.StudentVerifyApproved {
 			return nil, errors.New("pioneer account pending admin approval")
 		}
@@ -265,17 +239,12 @@ func (u *userService) Login(email, password string) (*domain.User, error) {
 	return user, nil
 }
 
-/*
-Authenticate
-- อ่าน userID จาก middleware ใส่ใน ctx.Locals("userID")
-*/
 func (u *userService) Authenticate(c *fiber.Ctx) (*domain.User, error) {
 	v := c.Locals("userID")
 	userID, ok := v.(uint)
 	if !ok || userID == 0 {
 		return nil, errors.New("unauthorized")
 	}
-
 	user, err := u.repo.FindUserById(userID)
 	if err != nil || user == nil {
 		return nil, errors.New("user not found")
@@ -283,11 +252,6 @@ func (u *userService) Authenticate(c *fiber.Ctx) (*domain.User, error) {
 	return user, nil
 }
 
-/*
-VerifyEmail
-- client ส่ง token plain มา
-- service จะ sha256 แล้วหาใน DB
-*/
 func (u *userService) VerifyEmail(token string) error {
 	token = strings.TrimSpace(token)
 	if token == "" {
@@ -295,7 +259,7 @@ func (u *userService) VerifyEmail(token string) error {
 	}
 
 	hash := utils.Sha256Hex(token)
-	user, err := u.repo.FindUserByVerificationTokenHash(hash) // repo ต้องมี
+	user, err := u.repo.FindUserByVerificationTokenHash(hash)
 	if err != nil || user == nil {
 		return errors.New("invalid token")
 	}
@@ -308,16 +272,9 @@ func (u *userService) VerifyEmail(token string) error {
 	user.EmailVerifiedAt = &now
 	user.VerificationToken = ""
 	user.VerificationTokenExpiresAt = nil
-
 	return u.repo.SaveUser(user)
 }
 
-/*
-ForgotPassword
-- สร้าง token plain
-- เก็บ hash + expires ใน DB
-- ส่ง plain token ไป email service (ถ้ามี)
-*/
 func (u *userService) ForgotPassword(email string) error {
 	email = strings.TrimSpace(strings.ToLower(email))
 
@@ -334,14 +291,15 @@ func (u *userService) ForgotPassword(email string) error {
 	hash := utils.Sha256Hex(plain)
 	exp := time.Now().Add(30 * time.Minute)
 
+	// อย่า log ค่า user.ResetTokenHash เดิม เพราะทำให้สับสน และไม่ควร log token/hash ใน production
+	log.Printf("Reset token (dev only): %s", plain)
+
 	user.ResetTokenHash = hash
 	user.ResetTokenExpiresAt = &exp
-
 	if err := u.repo.SaveUser(user); err != nil {
 		return errors.New("fail to save user")
 	}
 
-	// publish event (optional)
 	if u.producer != nil {
 		payload := fmt.Sprintf(`{"user_id":%d,"email":"%s","token":"%s","expires_at":"%s"}`,
 			user.ID, user.Email, plain, exp.Format(time.RFC3339),
@@ -352,19 +310,16 @@ func (u *userService) ForgotPassword(email string) error {
 	return nil
 }
 
-/*
-SetPassword
-- client ส่ง token plain มา
-- service sha256 แล้วหา user
-*/
-func (u *userService) SetPassword(token, newPassword string) error {
-	token = strings.TrimSpace(token)
-	if token == "" || strings.TrimSpace(newPassword) == "" {
+func (u *userService) SetPassword(input dto.SetPasswordRequest) error {
+	token := strings.TrimSpace(input.Token)
+	newPassword := strings.TrimSpace(input.NewPassword)
+
+	if token == "" || newPassword == "" {
 		return errors.New("invalid input")
 	}
 
 	hash := utils.Sha256Hex(token)
-	user, err := u.repo.FindUserByResetToken(hash) // repo ต้องมี
+	user, err := u.repo.FindUserByResetToken(hash)
 	if err != nil || user == nil {
 		return errors.New("invalid or expired token")
 	}
@@ -382,15 +337,13 @@ func (u *userService) SetPassword(token, newPassword string) error {
 	user.ResetTokenHash = ""
 	user.ResetTokenExpiresAt = nil
 
-	if err := u.repo.SaveUser(user); err != nil {
-		return errors.New("fail to save user")
-	}
-	return nil
+	return u.repo.SaveUser(user)
 }
 
-/*
-Profile
-*/
+/* =========================
+   PROFILE
+========================= */
+
 func (u *userService) GetProfile(userID uint) (*domain.User, error) {
 	if userID == 0 {
 		return nil, errors.New("invalid user id")
@@ -416,7 +369,6 @@ func (u *userService) UpdateProfile(userID uint, input dto.UpdateUserProfile) (*
 		user.DisplayName = strings.TrimSpace(input.DisplayName)
 	}
 
-	// phone เป็น pointer: nil = ไม่แก้, &"" = เคลียร์
 	if input.Phone != nil {
 		p := strings.TrimSpace(*input.Phone)
 		if p == "" {
@@ -429,13 +381,13 @@ func (u *userService) UpdateProfile(userID uint, input dto.UpdateUserProfile) (*
 	if err := u.repo.SaveUser(user); err != nil {
 		return nil, err
 	}
-
 	return user, nil
 }
 
-/*
-Admin: SetStatus
-*/
+/* =========================
+   ADMIN: STATUS / ROLES / UNIVERSITY
+========================= */
+
 func (u *userService) SetStatus(userID uint, status string) error {
 	if userID == 0 {
 		return errors.New("invalid user_id")
@@ -457,10 +409,6 @@ func (u *userService) SetStatus(userID uint, status string) error {
 	return u.repo.SaveUser(user)
 }
 
-/*
-Admin: SetRoles
-- รับ []string codes เช่น ["ADMIN","BOOSTER"]
-*/
 func (u *userService) SetRoles(userID uint, roles []string) error {
 	if userID == 0 {
 		return errors.New("invalid user id")
@@ -481,7 +429,6 @@ func (u *userService) SetRoles(userID uint, roles []string) error {
 		}
 		roleIDs = append(roleIDs, role.ID)
 	}
-
 	if len(roleIDs) == 0 {
 		return errors.New("roles are required")
 	}
@@ -489,9 +436,6 @@ func (u *userService) SetRoles(userID uint, roles []string) error {
 	return u.userRoleRepo.ReplaceUserRoles(userID, roleIDs)
 }
 
-/*
-IsAdmin
-*/
 func (u *userService) IsAdmin(userID uint) (bool, error) {
 	if userID == 0 {
 		return false, errors.New("invalid user id")
@@ -501,7 +445,6 @@ func (u *userService) IsAdmin(userID uint) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-
 	for _, r := range roles {
 		if strings.ToUpper(r.Code) == "ADMIN" {
 			return true, nil
@@ -510,10 +453,67 @@ func (u *userService) IsAdmin(userID uint) (bool, error) {
 	return false, nil
 }
 
-/*
-Pioneer: SubmitPioneerVerification
-- ใช้กรณี user อยากแก้ข้อมูล/ส่งใหม่หลังสมัคร
-*/
+func (u *userService) IsPioneer(userID uint) (bool, error) {
+	if userID == 0 {
+		return false, errors.New("invalid user id")
+	}
+
+	roles, err := u.userRoleRepo.GetRolesByUserID(userID)
+	if err != nil {
+		return false, err
+	}
+	for _, r := range roles {
+		if strings.ToUpper(r.Code) == "Pioneer" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (u *userService) IsBooster(userID uint) (bool, error) {
+	if userID == 0 {
+		return false, errors.New("invalid user id")
+	}
+
+	roles, err := u.userRoleRepo.GetRolesByUserID(userID)
+	if err != nil {
+		return false, err
+	}
+	for _, r := range roles {
+		if strings.ToUpper(r.Code) == "Booster" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (u *userService) CreateUniversity(adminID uint, input dto.UniversityCreateRequest) error {
+	if adminID == 0 {
+		return errors.New("unauthorized")
+	}
+
+	nameTh := strings.TrimSpace(input.NameTH)
+	nameEn := strings.TrimSpace(input.NameEN)
+	domainStr := strings.ToLower(strings.TrimSpace(input.Domain))
+
+	if nameTh == "" || nameEn == "" || domainStr == "" {
+		return errors.New("invalid input")
+	}
+
+	domainStr = strings.TrimPrefix(domainStr, "@")
+
+	un := &domain.University{
+		NameTH: nameTh,
+		NameEN: nameEn,
+		Domain: domainStr,
+	}
+	return u.universityRepo.AddUniversity(un)
+}
+
+/* =========================
+   PIONEER
+========================= */
+
 func (u *userService) SubmitPioneerVerification(userID uint, input dto.PioneerInput) error {
 	if userID == 0 {
 		return errors.New("invalid user id")
@@ -523,8 +523,6 @@ func (u *userService) SubmitPioneerVerification(userID uint, input dto.PioneerIn
 	if err != nil || user == nil {
 		return errors.New("user not found")
 	}
-
-	// reuse helper เดียวกับ Register
 	return u.upsertPioneerPending(userID, user.Email, input)
 }
 
@@ -558,43 +556,246 @@ func (u *userService) ListPendingPioneerVerifications(limit, offset int) ([]dto.
 	return out, nil
 }
 
-/*
-KYC: Submit
-- สร้าง submission pending + เพิ่ม documents
-*/
-func (u *userService) SubmitKYC(userID uint, input dto.KYCRequest) error {
-	if userID == 0 {
-		return errors.New("invalid user id")
-	}
-	if len(input.Documents) == 0 {
-		return errors.New("documents are required")
-	}
-
-	sub := &domain.KYCSubmission{
-		UserID: userID,
-		Status: domain.KYCStatusPending,
-	}
-	if err := u.kycRepo.CreateSubmission(sub); err != nil {
+func (u *userService) upsertPioneerPending(userID uint, email string, p dto.PioneerInput) error {
+	emailDomain, err := utils.ExtractEmailDomain(email)
+	if err != nil {
 		return err
 	}
 
-	docs := make([]domain.KYCDocument, 0, len(input.Documents))
-	for _, d := range input.Documents {
-		if strings.TrimSpace(d.DocType) == "" || strings.TrimSpace(d.FileURL) == "" {
-			return errors.New("doc_type and file_url are required")
+	university, err := u.universityRepo.FindByDomain(emailDomain)
+	if err != nil || university == nil {
+		return errors.New("email domain is not associated with any university")
+	}
+
+	profile := &domain.StudentProfile{
+		UserID:         userID,
+		StudentCode:    strings.TrimSpace(p.StudentCode),
+		Faculty:        strings.TrimSpace(p.Faculty),
+		Major:          strings.TrimSpace(p.Major),
+		YearLevel:      strings.TrimSpace(p.YearLevel),
+		StudentCardURL: p.StudentCardURL,
+		VerifyStatus:   domain.StudentVerifyPending,
+		UniversityID:   &university.ID,
+	}
+
+	return u.studentRepo.Upsert(profile)
+}
+
+/* =========================
+   KYC (BOOSTER)
+========================= */
+
+func (u *userService) SubmitKYCMultipart(
+	ctx context.Context,
+	userID uint,
+	input dto.KYCSubmitFiles,
+) (*dto.KYCSubmitResponse, error) {
+	const (
+		faceThreshold = 0.75
+		maxWidth      = 1200
+		jpgQuality    = 85
+		maxFileSize   = 12 * 1024 * 1024 // 12MB
+	)
+
+	// deps
+	if u.kycRepo == nil {
+		return nil, errors.New("kyc repo is not configured")
+	}
+	if u.iapp == nil {
+		return nil, errors.New("iapp is not configured")
+	}
+	if u.uploader == nil {
+		return nil, errors.New("uploader is not configured")
+	}
+
+	// validate
+	if userID == 0 {
+		return nil, errors.New("invalid user_id")
+	}
+	if strings.TrimSpace(input.IDFront.Filename) == "" || len(input.IDFront.Bytes) == 0 {
+		return nil, errors.New("id_front is required")
+	}
+	if len(input.IDFront.Bytes) > maxFileSize {
+		return nil, errors.New("id_front size is too large")
+	}
+	if input.Selfie != nil && len(input.Selfie.Bytes) > maxFileSize {
+		return nil, errors.New("selfie size is too large")
+	}
+
+	for i, f := range input.Others {
+		if strings.TrimSpace(f.Filename) == "" || len(f.Bytes) == 0 {
+			return nil, fmt.Errorf("other file #%d is invalid", i+1)
 		}
-		docs = append(docs, domain.KYCDocument{
-			DocType: d.DocType,
-			FileURL: d.FileURL,
+		if len(f.Bytes) > maxFileSize {
+			return nil, fmt.Errorf("other file #%d size is too large", i+1)
+		}
+		docType := strings.TrimSpace(strings.ToLower(f.DocType))
+		if docType == "" {
+			return nil, fmt.Errorf("other file #%d doc_type is required", i+1)
+		}
+		// others ต้องเป็น "other" เท่านั้น
+		if docType != string(domain.KYCDocTypeOther) {
+			return nil, errors.New("invalid doc_type for others (use 'other')")
+		}
+	}
+
+	// guard: ห้ามส่งซ้ำถ้ายัง pending อยู่
+	if latest, err := u.kycRepo.FindLatestByUserID(userID); err == nil && latest != nil {
+		if latest.Status == domain.KYCStatusPending {
+			return nil, errors.New("kyc already pending admin review")
+		}
+	} else if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+
+	// =========================
+	// 1) Normalize images (EXIF + resize + JPG)
+	// =========================
+	idNorm, err := utils.NormalizeToJPG(input.IDFront.Bytes, maxWidth, jpgQuality)
+	if err != nil {
+		return nil, fmt.Errorf("normalize id_front failed: %w", err)
+	}
+	input.IDFront.Bytes = idNorm
+	input.IDFront.Filename = "id_front.jpg"
+
+	if input.Selfie != nil && len(input.Selfie.Bytes) > 0 {
+		selfieNorm, err := utils.NormalizeToJPG(input.Selfie.Bytes, maxWidth, jpgQuality)
+		if err != nil {
+			return nil, fmt.Errorf("normalize selfie failed: %w", err)
+		}
+		input.Selfie.Bytes = selfieNorm
+		input.Selfie.Filename = "selfie.jpg"
+	}
+
+	for i := range input.Others {
+		norm, err := utils.NormalizeToJPG(input.Others[i].Bytes, maxWidth, jpgQuality)
+		if err != nil {
+			return nil, fmt.Errorf("normalize others #%d failed: %w", i+1, err)
+		}
+		input.Others[i].Bytes = norm
+		input.Others[i].Filename = fmt.Sprintf("other_%d.jpg", i+1)
+	}
+
+	// =========================
+	// 2) Upload files FIRST
+	// =========================
+	idFrontURL, err := u.uploader.UploadBytes(ctx, "kyc/id-front", input.IDFront.Filename, input.IDFront.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("upload id_front failed: %w", err)
+	}
+
+	var selfieURL string
+	if input.Selfie != nil && len(input.Selfie.Bytes) > 0 {
+		selfieURL, err = u.uploader.UploadBytes(ctx, "kyc/selfie", input.Selfie.Filename, input.Selfie.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("upload selfie failed: %w", err)
+		}
+	}
+
+	otherDocs := make([]domain.KYCDocument, 0, len(input.Others))
+	for i, f := range input.Others {
+		url, upErr := u.uploader.UploadBytes(ctx, "kyc/other", f.Filename, f.Bytes)
+		if upErr != nil {
+			return nil, fmt.Errorf("upload other #%d failed: %w", i+1, upErr)
+		}
+		otherDocs = append(otherDocs, domain.KYCDocument{
+			DocType: domain.KYCDocTypeOther,
+			FileURL: url,
 		})
 	}
 
-	return u.kycRepo.AddDocuments(sub.ID, docs)
+	// =========================
+	// 3) Prepare submission + call iApp face match (optional แต่ถ้าจะ auto-approve ต้องมี)
+	// =========================
+	ocrProvider := "iapp"
+	sub := &domain.KYCSubmission{
+		UserID:      userID,
+		Status:      domain.KYCStatusPending,
+		OCRProvider: &ocrProvider,
+		// FaceMatchScore/Passed/OCRError จะเติมด้านล่าง
+		AutoApproved: false,
+	}
+
+	// ถ้ามี selfie ค่อยเรียก face match
+	if input.Selfie != nil && len(input.Selfie.Bytes) > 0 {
+		faceRes, faceErr := u.iapp.VerifyFaceAndIDCard(
+			ctx,
+			input.IDFront.Filename, bytes.NewReader(input.IDFront.Bytes),
+			input.Selfie.Filename, bytes.NewReader(input.Selfie.Bytes),
+		)
+
+		if faceRes != nil {
+			score := faceRes.Total.Confidence
+			passed := strings.ToLower(faceRes.Total.IsSamePerson) == "true"
+			sub.FaceMatchScore = &score
+			sub.FaceMatchPassed = &passed
+		}
+
+		// iApp error -> เก็บไว้ (ไม่ให้ submit ล่ม)
+		if faceErr != nil {
+			msg := faceErr.Error()
+			sub.OCRError = &msg
+		}
+	} else {
+		// ไม่มี selfie -> pending ให้แอดมินตรวจ
+		msg := "selfie not provided"
+		sub.OCRError = &msg
+	}
+
+	// =========================
+	// 4) Auto-approve logic
+	// =========================
+	faceOK := sub.FaceMatchScore != nil &&
+		sub.FaceMatchPassed != nil &&
+		*sub.FaceMatchScore >= faceThreshold &&
+		*sub.FaceMatchPassed
+
+	if faceOK && sub.OCRError == nil {
+		sub.Status = domain.KYCStatusAutoApproved
+		sub.AutoApproved = true
+	} else {
+		sub.Status = domain.KYCStatusPending
+		sub.AutoApproved = false
+
+		// ถ้าไม่มี error แต่ไม่ผ่าน threshold ใส่เหตุผลช่วย debug
+		if sub.OCRError == nil {
+			msg := fmt.Sprintf("face match below threshold %.2f", faceThreshold)
+			sub.OCRError = &msg
+		}
+	}
+
+	// =========================
+	// 5) Documents + Create (TX)
+	// =========================
+	docs := make([]domain.KYCDocument, 0, 1+1+len(otherDocs))
+	docs = append(docs, domain.KYCDocument{
+		DocType: domain.KYCDocTypeIDCard,
+		FileURL: idFrontURL,
+	})
+	if selfieURL != "" {
+		docs = append(docs, domain.KYCDocument{
+			DocType: domain.KYCDocTypeSelfie,
+			FileURL: selfieURL,
+		})
+	}
+	docs = append(docs, otherDocs...)
+
+	if err := u.kycRepo.CreateSubmissionWithDocuments(sub, docs); err != nil {
+		return nil, err
+	}
+
+	// =========================
+	// 6) Response
+	// =========================
+	return &dto.KYCSubmitResponse{
+		KYCID:  sub.ID,
+		Status: string(sub.Status),
+
+		OCRProvider:  sub.OCRProvider,
+		AutoApproved: sub.AutoApproved,
+	}, nil
 }
 
-/*
-KYC: GetStatus
-*/
 func (u *userService) GetKYCStatus(userID uint) (*dto.KYCStatusResponse, error) {
 	if userID == 0 {
 		return nil, errors.New("invalid user_id")
@@ -609,12 +810,12 @@ func (u *userService) GetKYCStatus(userID uint) (*dto.KYCStatusResponse, error) 
 	for _, d := range sub.Documents {
 		docOut = append(docOut, dto.KYCDocumentResponse{
 			ID:      d.ID,
-			DocType: d.DocType,
+			DocType: string(d.DocType),
 			FileURL: d.FileURL,
 		})
 	}
 
-	submittedAt := sub.SubmittedAt.Format(time.RFC3339)
+	submittedAt := sub.CreatedAt.Format(time.RFC3339)
 
 	var reviewedAt *string
 	if sub.ReviewedAt != nil {
@@ -623,14 +824,14 @@ func (u *userService) GetKYCStatus(userID uint) (*dto.KYCStatusResponse, error) 
 	}
 
 	var reviewNote *string
-	if sub.Review != nil && strings.TrimSpace(sub.Review.Note) != "" {
-		n := sub.Review.Note
+	if sub.Review != nil && sub.Review.Note != nil && strings.TrimSpace(*sub.Review.Note) != "" {
+		n := strings.TrimSpace(*sub.Review.Note)
 		reviewNote = &n
 	}
 
 	return &dto.KYCStatusResponse{
 		KYCID:       sub.ID,
-		Status:      sub.Status,
+		Status:      string(sub.Status),
 		SubmittedAt: submittedAt,
 		ReviewedAt:  reviewedAt,
 		ReviewNote:  reviewNote,
@@ -638,19 +839,37 @@ func (u *userService) GetKYCStatus(userID uint) (*dto.KYCStatusResponse, error) 
 	}, nil
 }
 
-/*
-EnsureUserCanInvest
-- user ต้อง active
-- KYC ต้อง approved
-- role ต้องเป็น BOOSTER หรือ PIONEER
-- pioneer ห้ามลงทุนโปรเจกต์ตัวเอง
-*/
+func (u *userService) ListPendingKYC(limit, offset int) ([]dto.PendingKYCResponse, error) {
+	if u.kycRepo == nil {
+		return nil, errors.New("kyc repo is not configured")
+	}
+
+	subs, err := u.kycRepo.ListPending(limit, offset)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]dto.PendingKYCResponse, 0, len(subs))
+	for _, s := range subs {
+		out = append(out, dto.PendingKYCResponse{
+			KYCID:       s.ID,
+			UserID:      s.UserID,
+			Status:      string(s.Status),
+			SubmittedAt: s.CreatedAt.Format(time.RFC3339),
+		})
+	}
+	return out, nil
+}
+
+/* =========================
+   INVEST PERMISSION
+========================= */
+
 func (u *userService) EnsureUserCanInvest(userID uint, projectOwnerID uint) error {
 	user, err := u.repo.FindUserById(userID)
 	if err != nil || user == nil {
 		return errors.New("user not found")
 	}
-
 	if user.Status != "active" {
 		return errors.New("user not active")
 	}
@@ -659,7 +878,7 @@ func (u *userService) EnsureUserCanInvest(userID uint, projectOwnerID uint) erro
 	if err != nil || kyc == nil {
 		return errors.New("kyc not found")
 	}
-	if kyc.Status != domain.KYCStatusApproved {
+	if kyc.Status != domain.KYCStatusApproved && kyc.Status != domain.KYCStatusAutoApproved {
 		return errors.New("kyc not approved")
 	}
 
@@ -682,36 +901,23 @@ func (u *userService) EnsureUserCanInvest(userID uint, projectOwnerID uint) erro
 	if !isBooster && !isPioneer {
 		return errors.New("user cannot invest")
 	}
-
 	if isPioneer && userID == projectOwnerID {
 		return errors.New("pioneer cannot invest in own project")
 	}
-
 	return nil
 }
 
-func (u *userService) CreateUniversity(adminID uint, input dto.UniversityCreateRequest) error {
-	if adminID == 0 {
-		return errors.New("unauthorized")
+/* =========================
+   HELPERS
+========================= */
+
+func maskThaiID(id string) string {
+	id = strings.TrimSpace(id)
+	id = strings.ReplaceAll(id, "-", "")
+	id = strings.ReplaceAll(id, " ", "")
+	if len(id) <= 4 {
+		return "XXXX"
 	}
-
-	// 2) validate input
-	nameTh := strings.TrimSpace(input.NameTH)
-	nameEn := strings.TrimSpace(input.NameEN)
-	domainStr := strings.ToLower(strings.TrimSpace(input.Domain))
-	if nameTh == "" || domainStr == "" || nameEn == "" {
-		return errors.New("invalid input")
-	}
-
-	//optional) กัน user ใส่ @ มา
-	domainStr = strings.TrimPrefix(domainStr, "@")
-
-	// 3) map dto -> domain
-	un := &domain.University{
-		NameTH: nameTh,
-		NameEN: nameEn,
-		Domain: domainStr,
-	}
-
-	return u.universityRepo.AddUniversity(un)
+	last4 := id[len(id)-4:]
+	return "XXXXXXXXX" + last4
 }

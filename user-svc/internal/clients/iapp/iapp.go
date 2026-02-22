@@ -5,16 +5,25 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"time"
 )
 
-type ThaiIDFrontResponse struct {
-	IDNumber       string  `json:"id_number"`
-	DetectionScore float64 `json:"detection_score"`
-	ErrorMessage   string  `json:"error_message"`
+type FaceMatchResult struct {
+	Confidence   float64 `json:"confidence"`
+	IsSamePerson string  `json:"isSamePerson"` // docs เป็น string "true"/"false"
+}
+
+type FaceAndIDCardVerificationResponse struct {
+	IDCard      FaceMatchResult `json:"idcard"`
+	Selfie      FaceMatchResult `json:"selfie"`
+	Total       FaceMatchResult `json:"total"`
+	TimeProcess float64         `json:"time_process"`
+	// เผื่อกรณี error เป็น json
+	ErrorMessage string `json:"error_message,omitempty"`
 }
 
 type Client struct {
@@ -31,7 +40,15 @@ func New(apiKey string) *Client {
 	}
 }
 
-func (c *Client) OCRThaiIDFront(ctx context.Context, filename string, r io.Reader) (*ThaiIDFrontResponse, error) {
+// VerifyFaceAndIDCard: เทียบ "รูปบัตรประชาชน"กับ "รูปเซลฟี่"
+// Endpoint: POST /v3/store/ekyc/face-and-id-card-verification
+func (c *Client) VerifyFaceAndIDCard(
+	ctx context.Context,
+	idCardFilename string,
+	idCardReader io.Reader,
+	selfieFilename string,
+	selfieReader io.Reader,
+) (*FaceAndIDCardVerificationResponse, error) {
 	if c.apiKey == "" {
 		return nil, errors.New("missing iapp api key")
 	}
@@ -39,25 +56,30 @@ func (c *Client) OCRThaiIDFront(ctx context.Context, filename string, r io.Reade
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
 
-	fw, err := w.CreateFormFile("file", filename)
+	// file0 = Selfie image
+	fw0, err := w.CreateFormFile("file1", idCardFilename)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := io.Copy(fw, r); err != nil {
+	if _, err := io.Copy(fw0, idCardReader); err != nil {
 		return nil, err
 	}
 
-	// ปิด writer เพื่อเขียน boundary ให้ครบ
+	// file1 =ID card image
+	fw1, err := w.CreateFormFile("file0", selfieFilename)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := io.Copy(fw1, selfieReader); err != nil {
+		return nil, err
+	}
+
 	if err := w.Close(); err != nil {
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodPost,
-		"https://api.iapp.co.th/v3/store/ekyc/thai-national-id-card/front",
-		&buf,
-	)
+	url := "https://api.iapp.co.th/v3/store/ekyc/face-and-id-card-verification"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, &buf)
 	if err != nil {
 		return nil, err
 	}
@@ -72,16 +94,22 @@ func (c *Client) OCRThaiIDFront(ctx context.Context, filename string, r io.Reade
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
+
+	// non-2xx -> คืน error ออกไปเลย (พยายามดึง error_message ถ้าเป็น json)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, errors.New(string(body))
+		var e FaceAndIDCardVerificationResponse
+		if json.Unmarshal(body, &e) == nil && e.ErrorMessage != "" {
+			return &e, fmt.Errorf("iapp error (%d): %s", resp.StatusCode, e.ErrorMessage)
+		}
+		return nil, fmt.Errorf("iapp http error (%d): %s", resp.StatusCode, string(body))
 	}
 
-	var out ThaiIDFrontResponse
+	var out FaceAndIDCardVerificationResponse
 	if err := json.Unmarshal(body, &out); err != nil {
 		return nil, err
 	}
 
-	// ถ้า iApp ส่ง error_message มา
+	// เผื่อบางเคส iApp ส่ง error_message มากับ 200
 	if out.ErrorMessage != "" {
 		return &out, errors.New(out.ErrorMessage)
 	}

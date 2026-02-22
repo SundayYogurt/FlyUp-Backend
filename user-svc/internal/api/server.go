@@ -34,6 +34,8 @@ func StartServer(cfg config.Config) {
 	}
 	log.Println("database connected")
 
+	seedRoles(db)
+
 	// ---------- MIGRATION ----------
 	if err := db.AutoMigrate(
 		&domain.User{},
@@ -56,6 +58,7 @@ func StartServer(cfg config.Config) {
 		log.Fatalf("cloudinary init error: %v", err)
 	}
 	iappClient := iapp.New(cfg.IAppApiKey)
+	up := cloudinary.NewCloudinaryUploader(cld)
 
 	// ---------- Repositories ----------
 	userRepo := repository.NewUserRepository(db)
@@ -74,13 +77,14 @@ func StartServer(cfg config.Config) {
 		universityRepo,
 		roleRepo,
 		userRoleRepo,
+		iappClient,
+		up,
 	)
 
 	// ---------- Handler ----------
 	userHandler := handlers.NewUserHandler(
 		userSvc,
 		cld,
-		iappClient,
 	)
 	userHandler.SetupRoutes(app)
 
@@ -93,4 +97,19 @@ func StartServer(cfg config.Config) {
 	addr := cfg.ServerPort
 	log.Println("listening on", addr)
 	log.Fatal(app.Listen(addr))
+}
+
+func seedRoles(db *gorm.DB) {
+	codes := []string{"ADMIN", "BOOSTER", "PIONEER"}
+
+	for _, code := range codes {
+		var r domain.Role
+		err := db.Where("code = ?", code).First(&r).Error
+		if err == gorm.ErrRecordNotFound {
+			_ = db.Create(&domain.Role{
+				Code: code,
+				Name: code, //
+			}).Error
+		}
+	}
 }

@@ -13,8 +13,6 @@ type RegisterRequest struct {
 }
 
 type BoosterRegisterInput struct {
-	// ถ้าส่งมา แปลว่า "ส่ง KYC ตอนสมัคร"
-	KYC *KYCRequest `json:"kyc,omitempty"`
 
 	// ถ้าส่งมา แปลว่า "ผูกบัญชีธนาคารตอนสมัคร"
 	BankAccount *BankAccountInput `json:"bank_account,omitempty"`
@@ -41,7 +39,7 @@ type ForgotPasswordRequest struct {
 	Email string `json:"email" validate:"required,email"`
 }
 
-type ResetPasswordRequest struct {
+type SetPasswordRequest struct {
 	Token       string `json:"token" validate:"required"`
 	NewPassword string `json:"new_password" validate:"required,min=6"`
 }

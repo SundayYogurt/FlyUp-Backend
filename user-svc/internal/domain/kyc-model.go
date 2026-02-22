@@ -1,54 +1,78 @@
 package domain
 
-import "time"
+import (
+	"time"
 
-const (
-	KYCStatusPending  = "pending"
-	KYCStatusApproved = "approved"
-	KYCStatusRejected = "rejected"
+	"gorm.io/gorm"
 )
 
-const (
-	KYCDecisionApproved = "approved"
-	KYCDecisionRejected = "rejected"
-)
+type KYCStatus string
 
 const (
-	KYCDocTypeIDCard      = "id_card"
-	KYCDocTypeStudentCard = "student_card"
-	KYCDocTypeSelfie      = "selfie"
-	KYCDocTypeOther       = "other"
+	KYCStatusPending      KYCStatus = "pending"
+	KYCStatusAutoApproved KYCStatus = "auto_approved" // ผ่าน OCR / Face match
+	KYCStatusApproved     KYCStatus = "approved"      // admin อนุมัติ
+	KYCStatusRejected     KYCStatus = "rejected"
+)
+
+type KYCDecision string
+
+const (
+	KYCDecisionApproved KYCDecision = "approved"
+	KYCDecisionRejected KYCDecision = "rejected"
+)
+
+type KYCDocType string
+
+const (
+	KYCDocTypeIDCard      KYCDocType = "id_card"
+	KYCDocTypeStudentCard KYCDocType = "student_card"
+	KYCDocTypeSelfie      KYCDocType = "selfie"
+	KYCDocTypeOther       KYCDocType = "other"
 )
 
 type KYCSubmission struct {
-	ID          uint          `gorm:"primaryKey" json:"id"`
-	UserID      uint          `gorm:"not null;index" json:"user_id"`
-	Status      string        `gorm:"type:varchar(20);not null;default:'pending'" json:"status"`
-	SubmittedAt time.Time     `gorm:"autoCreateTime" json:"submitted_at"`
-	ReviewedAt  *time.Time    `json:"reviewed_at,omitempty"`
-	ReviewedBy  *uint         `gorm:"index" json:"reviewed_by,omitempty"` // admin user_id
-	Documents   []KYCDocument `gorm:"foreignKey:KYCID" json:"documents,omitempty"`
-	Review      *KYCReview    `gorm:"foreignKey:KYCID" json:"review,omitempty"`
-	CreatedAt   time.Time     `gorm:"autoCreateTime" json:"created_at"`
-	UpdatedAt   time.Time     `gorm:"autoUpdateTime" json:"updated_at"`
+	ID     uint      `gorm:"primaryKey" json:"id"`
+	UserID uint      `gorm:"not null;index" json:"user_id"`
+	Status KYCStatus `gorm:"type:varchar(20);not null;default:'pending'" json:"status"`
+
+	// --- iApp / Auto KYC ---
+	OCRProvider     *string  `gorm:"type:varchar(50)" json:"ocr_provider,omitempty"` // iapp
+	FaceMatchScore  *float64 `json:"face_match_score,omitempty"`
+	FaceMatchPassed *bool    `json:"face_match_passed,omitempty"`
+	OCRError        *string  `gorm:"type:text" json:"ocr_error,omitempty"`
+	AutoApproved    bool     `gorm:"default:false" json:"auto_approved"`
+
+	// --- Relations ---
+	Documents []KYCDocument `gorm:"constraint:OnUpdate:CASCADE,OnDelete:CASCADE;foreignKey:KYCID" json:"documents,omitempty"`
+	Review    *KYCReview    `gorm:"constraint:OnUpdate:CASCADE,OnDelete:CASCADE;foreignKey:KYCID" json:"review,omitempty"`
+
+	// --- Timestamps ---
+	ReviewedAt *time.Time `json:"reviewed_at,omitempty"`
+	gorm.Model
 }
 
 type KYCDocument struct {
-	ID        uint      `gorm:"primaryKey" json:"id"`
-	KYCID     uint      `gorm:"not null;index" json:"kyc_id"`
-	DocType   string    `gorm:"type:varchar(30);not null" json:"doc_type"`
-	FileURL   string    `gorm:"type:text;not null" json:"file_url"`
-	CreatedAt time.Time `gorm:"autoCreateTime" json:"created_at"`
-	UpdatedAt time.Time `gorm:"autoUpdateTime" json:"updated_at"`
+	ID      uint       `gorm:"primaryKey" json:"id"`
+	KYCID   uint       `gorm:"not null;index" json:"kyc_id"`
+	DocType KYCDocType `gorm:"type:varchar(30);not null" json:"doc_type"`
+	FileURL string     `gorm:"type:text;not null" json:"file_url"`
+
+	// optional metadata
+	MimeType *string `gorm:"type:varchar(100)" json:"mime_type,omitempty"`
+	FileSize *int64  `json:"file_size,omitempty"`
+	FileHash *string `gorm:"type:varchar(128)" json:"file_hash,omitempty"` // sha256
+
+	gorm.Model
 }
 
 type KYCReview struct {
-	ID         uint      `gorm:"primaryKey" json:"id"`
-	KYCID      uint      `gorm:"uniqueIndex;not null" json:"kyc_id"`
-	ReviewedBy uint      `gorm:"not null;index" json:"reviewed_by"`
-	Decision   string    `gorm:"type:varchar(20);not null" json:"decision"`
-	Note       string    `gorm:"type:text" json:"note"`
+	ID         uint        `gorm:"primaryKey" json:"id"`
+	KYCID      uint        `gorm:"uniqueIndex;not null" json:"kyc_id"`
+	ReviewedBy uint        `gorm:"not null;index" json:"reviewed_by"` // admin user_id
+	Decision   KYCDecision `gorm:"type:varchar(20);not null" json:"decision"`
+	Note       *string     `gorm:"type:text" json:"note,omitempty"`
+
 	ReviewedAt time.Time `gorm:"autoCreateTime" json:"reviewed_at"`
-	CreatedAt  time.Time `gorm:"autoCreateTime" json:"created_at"`
-	UpdatedAt  time.Time `gorm:"autoUpdateTime" json:"updated_at"`
+	gorm.Model
 }

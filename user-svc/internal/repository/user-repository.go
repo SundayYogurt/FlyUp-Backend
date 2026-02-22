@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"errors"
+
 	"github.com/SundayYogurt/user_service/internal/domain"
 	"gorm.io/gorm"
 )
@@ -32,7 +34,7 @@ func (r *userRepository) FindUserByEmail(email string) (*domain.User, error) {
 	err := r.db.First(&user, "email = ?", email).Error
 
 	if err != nil {
-		return nil, err
+		return nil, errors.New("email not found")
 	}
 
 	return &user, nil
