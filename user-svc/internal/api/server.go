@@ -1,3 +1,15 @@
+// @title FlyUp User Service API
+// @version 1.0
+// @description Auth/Profile/KYC/Pioneer/Admin endpoints.
+// @host localhost:3000
+// @BasePath /
+// @schemes http
+//
+// @securityDefinitions.apikey BearerAuth
+// @in header
+// @name Authorization
+// @description Bearer <JWT>
+
 package api
 
 import (
@@ -13,18 +25,14 @@ import (
 	"github.com/SundayYogurt/user_service/pkg/cloudinary"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
-	"github.com/gofiber/swagger"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
-
-	_ "github.com/SundayYogurt/user_service/docs"
 )
 
 func StartServer(cfg config.Config) {
 	app := fiber.New()
 
-	// Swagger UI
-	app.Get("/swagger/*", swagger.HandlerDefault)
+	RegisterSwagger(app)
 
 	// ---------- CORS ----------
 	app.Use(cors.New(cors.Config{

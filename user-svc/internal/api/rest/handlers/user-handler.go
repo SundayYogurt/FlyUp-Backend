@@ -46,12 +46,13 @@ func (h *UserHandler) SetupRoutes(app *fiber.App) {
 	booster.Post("/kyc/submit", h.SubmitKYCMultipart)
 	booster.Get("/kyc/status", h.GetMyKYCStatus)
 
-	// pioneer
+	// pioneer (FIX PATH)
 	pioneer := auth.Group("/pioneer", middleware.PioneerOnly(h.svc))
-	pioneer.Post("/:userID/pioneer/verify", h.SubmitPioneerVerification)
+	// from: /pioneer/:userID/pioneer/verify  -> to: /pioneer/:userID/verify
+	pioneer.Post("/:userID/verify", h.SubmitPioneerVerification)
 	pioneer.Post("/uploads/student-card", h.UploadStudentCard)
 
-	// admin only (แยก group)
+	// admin only
 	admin := auth.Group("/admin", middleware.AdminOnly(h.svc))
 	admin.Patch("/:userID/status", h.SetStatus)
 	admin.Put("/:userID/roles", h.SetRoles)
@@ -61,8 +62,20 @@ func (h *UserHandler) SetupRoutes(app *fiber.App) {
 	admin.Post("/universities/create", h.CreateUniversity)
 }
 
-//Auth
+// ========================
+// Auth
+// ========================
 
+// Register godoc
+// @Summary Register a new user
+// @Description Register user (BOOSTER or PIONEER). Pioneer will be pending verification.
+// @Tags Auth
+// @Accept json
+// @Produce json
+// @Param payload body dto.RegisterRequest true "Register payload"
+// @Success 201 {object} dto.APISuccessAny
+// @Failure 400 {object} dto.APIError
+// @Router /api/v1/users/register [post]
 func (h *UserHandler) Register(c *fiber.Ctx) error {
 	var req dto.RegisterRequest
 	if err := c.BodyParser(&req); err != nil {
@@ -83,6 +96,16 @@ func (h *UserHandler) Register(c *fiber.Ctx) error {
 	return utils.ResponseSuccess(c, 201, "registered. please verify email")
 }
 
+// Login godoc
+// @Summary Login
+// @Tags Auth
+// @Accept json
+// @Produce json
+// @Param payload body dto.UserLogin true "Login payload"
+// @Success 200 {object} dto.APISuccessLogin
+// @Failure 400 {object} dto.APIError
+// @Failure 401 {object} dto.APIError
+// @Router /api/v1/users/login [post]
 func (h *UserHandler) Login(c *fiber.Ctx) error {
 	var req dto.UserLogin
 	if err := c.BodyParser(&req); err != nil {
@@ -106,14 +129,23 @@ func (h *UserHandler) Login(c *fiber.Ctx) error {
 			Email:       user.Email,
 			DisplayName: user.DisplayName,
 			Status:      user.Status,
+			Phone:       user.Phone,
+			CreatedAt:   user.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		},
 	})
 }
 
+// ForgotPassword godoc
+// @Summary Request password reset
+// @Tags Auth
+// @Accept json
+// @Produce json
+// @Param payload body dto.ForgotPasswordRequest true "Email payload"
+// @Success 200 {object} dto.APISuccessString
+// @Failure 400 {object} dto.APIError
+// @Router /api/v1/users/forgot-password [post]
 func (h *UserHandler) ForgotPassword(c *fiber.Ctx) error {
-	var req struct {
-		Email string `json:"email"`
-	}
+	var req dto.ForgotPasswordRequest
 	if err := c.BodyParser(&req); err != nil {
 		return utils.ResponseError(c, 400, "invalid email")
 	}
@@ -124,6 +156,15 @@ func (h *UserHandler) ForgotPassword(c *fiber.Ctx) error {
 	return utils.ResponseSuccess(c, 200, "reset link sent")
 }
 
+// SetPassword godoc
+// @Summary Reset password using token
+// @Tags Auth
+// @Accept json
+// @Produce json
+// @Param payload body dto.SetPasswordRequest true "Set password payload"
+// @Success 200 {object} dto.APISuccessString
+// @Failure 400 {object} dto.APIError
+// @Router /api/v1/users/reset-password [post]
 func (h *UserHandler) SetPassword(c *fiber.Ctx) error {
 	var req dto.SetPasswordRequest
 	if err := c.BodyParser(&req); err != nil {
@@ -141,6 +182,15 @@ func (h *UserHandler) SetPassword(c *fiber.Ctx) error {
 	return utils.ResponseSuccess(c, 200, "password updated")
 }
 
+// VerifyEmail godoc
+// @Summary Verify email using token
+// @Tags Auth
+// @Accept json
+// @Produce json
+// @Param payload body dto.VerifyEmailRequest true "Verify email payload"
+// @Success 200 {object} dto.APISuccessString
+// @Failure 400 {object} dto.APIError
+// @Router /api/v1/users/verify-email [post]
 func (h *UserHandler) VerifyEmail(c *fiber.Ctx) error {
 	var req dto.VerifyEmailRequest
 	if err := c.BodyParser(&req); err != nil || strings.TrimSpace(req.Token) == "" {
@@ -153,8 +203,19 @@ func (h *UserHandler) VerifyEmail(c *fiber.Ctx) error {
 	return utils.ResponseSuccess(c, 200, "email verified")
 }
 
-//Profile
+// ========================
+// Profile
+// ========================
 
+// Me godoc
+// @Summary Get my profile
+// @Tags Profile
+// @Security BearerAuth
+// @Produce json
+// @Success 200 {object} dto.APISuccessAny
+// @Failure 401 {object} dto.APIError
+// @Failure 404 {object} dto.APIError
+// @Router /api/v1/users/me [get]
 func (h *UserHandler) Me(c *fiber.Ctx) error {
 	userID, ok := c.Locals("userID").(uint)
 	if !ok || userID == 0 {
@@ -168,6 +229,19 @@ func (h *UserHandler) Me(c *fiber.Ctx) error {
 	return utils.ResponseSuccess(c, 200, fiber.Map{"user": user})
 }
 
+// UpdateProfile godoc
+// @Summary Update my profile
+// @Tags Profile
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param userID path int true "User ID"
+// @Param payload body dto.UpdateUserProfile true "Update profile payload"
+// @Success 200 {object} dto.APISuccessAny
+// @Failure 400 {object} dto.APIError
+// @Failure 401 {object} dto.APIError
+// @Failure 403 {object} dto.APIError
+// @Router /api/v1/users/profile/{userID} [patch]
 func (h *UserHandler) UpdateProfile(c *fiber.Ctx) error {
 	authID, ok := c.Locals("userID").(uint)
 	if !ok || authID == 0 {
@@ -196,8 +270,23 @@ func (h *UserHandler) UpdateProfile(c *fiber.Ctx) error {
 	return utils.ResponseSuccess(c, 200, fiber.Map{"user": user})
 }
 
-//Pioneer Verification
+// ========================
+// Pioneer
+// ========================
 
+// SubmitPioneerVerification godoc
+// @Summary Submit pioneer verification
+// @Tags Pioneer
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param userID path int true "User ID"
+// @Param payload body dto.PioneerInput true "Pioneer verification payload"
+// @Success 200 {object} dto.APISuccessString
+// @Failure 400 {object} dto.APIError
+// @Failure 401 {object} dto.APIError
+// @Failure 403 {object} dto.APIError
+// @Router /api/v1/users/pioneer/{userID}/verify [post]
 func (h *UserHandler) SubmitPioneerVerification(c *fiber.Ctx) error {
 	authID, ok := c.Locals("userID").(uint)
 	if !ok || authID == 0 {
@@ -234,8 +323,73 @@ func (h *UserHandler) SubmitPioneerVerification(c *fiber.Ctx) error {
 	return utils.ResponseSuccess(c, 200, "pioneer verification submitted")
 }
 
-//KYC (Multipart)
+// UploadStudentCard godoc
+// @Summary Upload student card image
+// @Tags Pioneer
+// @Security BearerAuth
+// @Accept multipart/form-data
+// @Produce json
+// @Param file formData file true "Student card image (jpg/jpeg/png/webp, max 5MB)"
+// @Success 200 {object} dto.APISuccessAny
+// @Failure 400 {object} dto.APIError
+// @Failure 401 {object} dto.APIError
+// @Failure 500 {object} dto.APIError
+// @Router /api/v1/users/pioneer/uploads/student-card [post]
+func (h *UserHandler) UploadStudentCard(c *fiber.Ctx) error {
+	file, err := c.FormFile("file")
+	if err != nil {
+		return utils.ResponseError(c, 400, "file required")
+	}
 
+	ext := strings.ToLower(filepath.Ext(file.Filename))
+	if ext != ".jpg" && ext != ".jpeg" && ext != ".png" && ext != ".webp" {
+		return utils.ResponseError(c, 400, "only jpg/jpeg/png/webp allowed")
+	}
+
+	const maxSize = 5 * 1024 * 1024
+	if file.Size > maxSize {
+		return utils.ResponseError(c, 400, "file too large (max 5MB)")
+	}
+
+	src, err := file.Open()
+	if err != nil {
+		return utils.ResponseError(c, 400, "cannot open file")
+	}
+	defer src.Close()
+
+	res, err := h.cld.Upload.Upload(
+		context.Background(),
+		src,
+		uploader.UploadParams{Folder: "flyup/student_cards"},
+	)
+	if err != nil || res.SecureURL == "" {
+		return utils.ResponseError(c, 500, "upload failed")
+	}
+
+	return utils.ResponseSuccess(c, 200, fiber.Map{
+		"url":       res.SecureURL,
+		"public_id": res.PublicID,
+	})
+}
+
+// ========================
+// KYC
+// ========================
+
+// SubmitKYCMultipart godoc
+// @Summary Submit KYC (multipart)
+// @Description Upload id_front + selfie, optional others[]
+// @Tags KYC
+// @Security BearerAuth
+// @Accept multipart/form-data
+// @Produce json
+// @Param id_front formData file true "ID card front image (jpg/jpeg/png/webp)"
+// @Param selfie formData file true "Selfie image (jpg/jpeg/png/webp)"
+// @Param others formData file false "Other documents (can send multiple)"
+// @Success 200 {object} dto.APISuccessAny
+// @Failure 400 {object} dto.APIError
+// @Failure 401 {object} dto.APIError
+// @Router /api/v1/users/booster/kyc/submit [post]
 func (h *UserHandler) SubmitKYCMultipart(c *fiber.Ctx) error {
 	userID, ok := c.Locals("userID").(uint)
 	if !ok || userID == 0 {
@@ -262,7 +416,7 @@ func (h *UserHandler) SubmitKYCMultipart(c *fiber.Ctx) error {
 		return utils.ResponseError(c, 400, "id_front too large or invalid")
 	}
 
-	// selfie (REQUIRED) เพราะ service ใหม่ใช้ VerifyFaceAndIDCard อย่างเดียว
+	// selfie (REQUIRED)
 	sf, err := c.FormFile("selfie")
 	if err != nil || sf == nil {
 		return utils.ResponseError(c, 400, "selfie required")
@@ -290,9 +444,7 @@ func (h *UserHandler) SubmitKYCMultipart(c *fiber.Ctx) error {
 
 	if form != nil && form.File != nil {
 		if files, ok := form.File["others"]; ok && len(files) > 0 {
-			for i, f := range files {
-				_ = i
-
+			for _, f := range files {
 				if f == nil {
 					continue
 				}
@@ -335,6 +487,15 @@ func (h *UserHandler) SubmitKYCMultipart(c *fiber.Ctx) error {
 	return utils.ResponseSuccess(c, 200, resp)
 }
 
+// GetMyKYCStatus godoc
+// @Summary Get my KYC status
+// @Tags KYC
+// @Security BearerAuth
+// @Produce json
+// @Success 200 {object} dto.APISuccessAny
+// @Failure 401 {object} dto.APIError
+// @Failure 404 {object} dto.APIError
+// @Router /api/v1/users/booster/kyc/status [get]
 func (h *UserHandler) GetMyKYCStatus(c *fiber.Ctx) error {
 	userID, ok := c.Locals("userID").(uint)
 	if !ok || userID == 0 {
@@ -349,8 +510,22 @@ func (h *UserHandler) GetMyKYCStatus(c *fiber.Ctx) error {
 	return utils.ResponseSuccess(c, 200, status)
 }
 
-//Admin
+// ========================
+// Admin
+// ========================
 
+// SetStatus godoc
+// @Summary Set user status (admin)
+// @Tags Admin
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param userID path int true "User ID"
+// @Param payload body dto.SetStatusRequest true "Status payload"
+// @Success 200 {object} dto.APISuccessString
+// @Failure 400 {object} dto.APIError
+// @Failure 401 {object} dto.APIError
+// @Router /api/v1/users/admin/{userID}/status [patch]
 func (h *UserHandler) SetStatus(c *fiber.Ctx) error {
 	paramID, err := c.ParamsInt("userID")
 	if err != nil || paramID <= 0 {
@@ -358,9 +533,7 @@ func (h *UserHandler) SetStatus(c *fiber.Ctx) error {
 	}
 	targetID := uint(paramID)
 
-	var req struct {
-		Status string `json:"status"`
-	}
+	var req dto.SetStatusRequest
 	if err := c.BodyParser(&req); err != nil {
 		return utils.ResponseError(c, 400, "invalid input")
 	}
@@ -374,6 +547,18 @@ func (h *UserHandler) SetStatus(c *fiber.Ctx) error {
 	return utils.ResponseSuccess(c, 200, "status updated")
 }
 
+// SetRoles godoc
+// @Summary Set user roles (admin)
+// @Tags Admin
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param userID path int true "User ID"
+// @Param payload body dto.SetRolesRequest true "Roles payload"
+// @Success 200 {object} dto.APISuccessString
+// @Failure 400 {object} dto.APIError
+// @Failure 401 {object} dto.APIError
+// @Router /api/v1/users/admin/{userID}/roles [put]
 func (h *UserHandler) SetRoles(c *fiber.Ctx) error {
 	paramID, err := c.ParamsInt("userID")
 	if err != nil || paramID <= 0 {
@@ -389,12 +574,15 @@ func (h *UserHandler) SetRoles(c *fiber.Ctx) error {
 		return utils.ResponseError(c, 400, "roles required")
 	}
 
+	seen := map[string]bool{}
 	clean := make([]string, 0, len(req.Roles))
 	for _, r := range req.Roles {
 		r = strings.TrimSpace(strings.ToUpper(r))
-		if r != "" {
-			clean = append(clean, r)
+		if r == "" || seen[r] {
+			continue
 		}
+		seen[r] = true
+		clean = append(clean, r)
 	}
 	if len(clean) == 0 {
 		return utils.ResponseError(c, 400, "roles required")
@@ -407,6 +595,18 @@ func (h *UserHandler) SetRoles(c *fiber.Ctx) error {
 	return utils.ResponseSuccess(c, 200, "roles updated")
 }
 
+// ApprovePioneer godoc
+// @Summary Approve pioneer (admin)
+// @Tags Admin
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param userID path int true "User ID"
+// @Param payload body dto.ApprovePioneerRequest false "Optional note"
+// @Success 200 {object} dto.APISuccessString
+// @Failure 400 {object} dto.APIError
+// @Failure 401 {object} dto.APIError
+// @Router /api/v1/users/admin/{userID}/pioneer/approve [post]
 func (h *UserHandler) ApprovePioneer(c *fiber.Ctx) error {
 	adminID, ok := c.Locals("userID").(uint)
 	if !ok || adminID == 0 {
@@ -419,9 +619,7 @@ func (h *UserHandler) ApprovePioneer(c *fiber.Ctx) error {
 	}
 	targetID := uint(paramID)
 
-	var req struct {
-		Note string `json:"note"`
-	}
+	var req dto.ApprovePioneerRequest
 	_ = c.BodyParser(&req) // optional
 
 	if err := h.svc.ApprovePioneer(targetID, adminID, strings.TrimSpace(req.Note)); err != nil {
@@ -430,6 +628,18 @@ func (h *UserHandler) ApprovePioneer(c *fiber.Ctx) error {
 	return utils.ResponseSuccess(c, 200, "pioneer approved")
 }
 
+// RejectPioneer godoc
+// @Summary Reject pioneer (admin)
+// @Tags Admin
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param userID path int true "User ID"
+// @Param payload body dto.RejectPioneerRequest true "Reject reason"
+// @Success 200 {object} dto.APISuccessString
+// @Failure 400 {object} dto.APIError
+// @Failure 401 {object} dto.APIError
+// @Router /api/v1/users/admin/{userID}/pioneer/reject [post]
 func (h *UserHandler) RejectPioneer(c *fiber.Ctx) error {
 	adminID, ok := c.Locals("userID").(uint)
 	if !ok || adminID == 0 {
@@ -442,9 +652,7 @@ func (h *UserHandler) RejectPioneer(c *fiber.Ctx) error {
 	}
 	targetID := uint(paramID)
 
-	var req struct {
-		Reason string `json:"reason"`
-	}
+	var req dto.RejectPioneerRequest
 	if err := c.BodyParser(&req); err != nil {
 		return utils.ResponseError(c, 400, "invalid input")
 	}
@@ -458,6 +666,17 @@ func (h *UserHandler) RejectPioneer(c *fiber.Ctx) error {
 	return utils.ResponseSuccess(c, 200, "pioneer rejected")
 }
 
+// ListPendingPioneerVerifications godoc
+// @Summary List pending pioneer verifications (admin)
+// @Tags Admin
+// @Security BearerAuth
+// @Produce json
+// @Param limit query int false "Limit (max 200)" default(20)
+// @Param offset query int false "Offset" default(0)
+// @Success 200 {object} dto.APISuccessAny
+// @Failure 401 {object} dto.APIError
+// @Failure 500 {object} dto.APIError
+// @Router /api/v1/users/admin/pioneer/pending [get]
 func (h *UserHandler) ListPendingPioneerVerifications(c *fiber.Ctx) error {
 	limit := 20
 	offset := 0
@@ -485,6 +704,17 @@ func (h *UserHandler) ListPendingPioneerVerifications(c *fiber.Ctx) error {
 	})
 }
 
+// CreateUniversity godoc
+// @Summary Create university (admin)
+// @Tags Admin
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param payload body dto.UniversityCreateRequest true "University payload"
+// @Success 200 {object} dto.APISuccessString
+// @Failure 400 {object} dto.APIError
+// @Failure 401 {object} dto.APIError
+// @Router /api/v1/users/admin/universities/create [post]
 func (h *UserHandler) CreateUniversity(c *fiber.Ctx) error {
 	adminID, ok := c.Locals("userID").(uint)
 	if !ok || adminID == 0 {
@@ -502,46 +732,10 @@ func (h *UserHandler) CreateUniversity(c *fiber.Ctx) error {
 	return utils.ResponseSuccess(c, 200, "university created")
 }
 
-//Upload: Student Card
-
-func (h *UserHandler) UploadStudentCard(c *fiber.Ctx) error {
-	file, err := c.FormFile("file")
-	if err != nil {
-		return utils.ResponseError(c, 400, "file required")
-	}
-
-	ext := strings.ToLower(filepath.Ext(file.Filename))
-	if ext != ".jpg" && ext != ".jpeg" && ext != ".png" && ext != ".webp" {
-		return utils.ResponseError(c, 400, "only jpg/jpeg/png/webp allowed")
-	}
-
-	const maxSize = 5 * 1024 * 1024
-	if file.Size > maxSize {
-		return utils.ResponseError(c, 400, "file too large (max 5MB)")
-	}
-
-	src, err := file.Open()
-	if err != nil {
-		return utils.ResponseError(c, 400, "cannot open file")
-	}
-	defer src.Close()
-
-	res, err := h.cld.Upload.Upload(
-		context.Background(),
-		src,
-		uploader.UploadParams{Folder: "flyup/student_cards"},
-	)
-	if err != nil || res.SecureURL == "" {
-		return utils.ResponseError(c, 500, "upload failed")
-	}
-
-	return utils.ResponseSuccess(c, 200, fiber.Map{
-		"url":       res.SecureURL,
-		"public_id": res.PublicID,
-	})
-}
-
+// ========================
 // Helpers
+// ========================
+
 func isAllowedImageExt(filename string) bool {
 	ext := strings.ToLower(filepath.Ext(filename))
 	switch ext {
