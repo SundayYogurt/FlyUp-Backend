@@ -28,7 +28,10 @@ func StartServer(cfg config.Config) {
 	}))
 
 	// ---------- DB ----------
-	db, err := gorm.Open(postgres.Open(cfg.DatabaseDSN), &gorm.Config{})
+	db, err := gorm.Open(postgres.New(postgres.Config{
+		DSN:                  cfg.DatabaseDSN,
+		PreferSimpleProtocol: true,
+	}), &gorm.Config{})
 	if err != nil {
 		log.Fatalf("database connection error: %v", err)
 	}
