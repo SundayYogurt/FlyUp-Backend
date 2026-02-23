@@ -36,7 +36,7 @@ func StartServer(cfg config.Config) {
 
 	// ---------- CORS ----------
 	app.Use(cors.New(cors.Config{
-		AllowOrigins: "*",
+		AllowOrigins: cfg.BaseURL,
 		AllowHeaders: "Content-Type, Accept, Authorization",
 		AllowMethods: "GET, POST, PUT, PATCH, DELETE, OPTIONS",
 	}))

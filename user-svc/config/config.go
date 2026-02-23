@@ -14,6 +14,7 @@ type Config struct {
 	KafkaTopic    string
 	CloudinaryUrl string
 	IAppApiKey    string
+	BaseURL       string
 }
 
 func LoadConfig() Config {
@@ -34,8 +35,6 @@ func LoadConfig() Config {
 		}
 	}
 
-	log.Println("IAPP_API_KEY =", os.Getenv("IAPP_API_KEY"))
-
 	return Config{
 		ServerPort:    os.Getenv("SERVER_PORT"),
 		DatabaseDSN:   os.Getenv("DATABASE_DSN"),
@@ -43,5 +42,6 @@ func LoadConfig() Config {
 		KafkaTopic:    os.Getenv("KAFKA_TOPIC"),
 		CloudinaryUrl: os.Getenv("CLOUDINARY_URL"),
 		IAppApiKey:    os.Getenv("IAPP_API_KEY"),
+		BaseURL:       os.Getenv("BASE_URL"),
 	}
 }
