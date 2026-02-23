@@ -10,6 +10,8 @@ type UniversityRepository interface {
 	FindByDomain(domain string) (*domain.University, error)
 	List(limit, offset int) ([]domain.University, error)
 	AddUniversity(university *domain.University) error
+	UpdateUniversity(university *domain.University) error
+	DeleteUniversity(university *domain.University) error
 }
 
 type universityRepository struct {
@@ -52,4 +54,12 @@ func (u *universityRepository) List(limit, offset int) ([]domain.University, err
 
 func (u *universityRepository) AddUniversity(university *domain.University) error {
 	return u.db.Create(university).Error
+}
+
+func (u *universityRepository) UpdateUniversity(university *domain.University) error {
+	return u.db.Save(university).Error
+}
+
+func (u *universityRepository) DeleteUniversity(university *domain.University) error {
+	return u.db.Delete(university).Error
 }

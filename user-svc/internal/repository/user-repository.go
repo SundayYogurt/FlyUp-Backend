@@ -34,7 +34,10 @@ func (r *userRepository) FindUserByEmail(email string) (*domain.User, error) {
 	err := r.db.First(&user, "email = ?", email).Error
 
 	if err != nil {
-		return nil, errors.New("email not found")
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, gorm.ErrRecordNotFound
+		}
+		return nil, err
 	}
 
 	return &user, nil
@@ -63,6 +66,7 @@ func (r *userRepository) FindUserById(userID uint) (*domain.User, error) {
 func (r *userRepository) FindUserByVerificationTokenHash(hash string) (*domain.User, error) {
 	var user domain.User
 	if err := r.db.Where("verification_token = ?", hash).First(&user).Error; err != nil {
+		return nil, err
 	}
 	return &user, nil
 }

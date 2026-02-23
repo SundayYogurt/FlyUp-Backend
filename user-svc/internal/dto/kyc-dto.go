@@ -37,19 +37,20 @@ type RejectKYCRequest struct {
 	Reason string `json:"reason" validate:"required"`
 }
 
-type KYCSubmitFiles struct {
-	IDFront FileBytes   // required
-	Selfie  *FileBytes  // optional (หรือบังคับ ถ้าคุณเลือก)
-	Others  []TypedFile // optional
-}
-
 type FileBytes struct {
 	Filename string
 	Bytes    []byte
 }
 
 type TypedFile struct {
-	DocType  string // other
+	DocType  string
 	Filename string
 	Bytes    []byte
+}
+
+type KYCSubmitFiles struct {
+	IDFront      FileBytes
+	Selfie       *FileBytes
+	Others       []TypedFile
+	ConsentCodes []string
 }

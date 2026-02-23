@@ -1,28 +1,13 @@
 package dto
 
 type RegisterRequest struct {
-	Email       string  `json:"email" validate:"required,email"`
-	Password    string  `json:"password" validate:"required,min=6"`
-	DisplayName string  `json:"display_name" validate:"required"`
-	Phone       *string `json:"phone,omitempty"`
-
-	Role string `json:"role" validate:"required,oneof=BOOSTER PIONEER"`
-
-	Pioneer *PioneerInput         `json:"pioneer,omitempty"` // ต้องมีถ้า role=PIONEER
-	Booster *BoosterRegisterInput `json:"booster,omitempty"`
-}
-
-type BoosterRegisterInput struct {
-
-	// ถ้าส่งมา แปลว่า "ผูกบัญชีธนาคารตอนสมัคร"
-	BankAccount *BankAccountInput `json:"bank_account,omitempty"`
-}
-
-type BankAccountInput struct {
-	BankCode    string `json:"bank_code" validate:"required,oneof=SCB KTB KBANK BBL BAY TTB GSB BAAC"`
-	AccountNo   string `json:"account_no" validate:"required"`
-	AccountName string `json:"account_name" validate:"required"`
-	IsDefault   bool   `json:"is_default"`
+	Email        string   `json:"email"`
+	Password     string   `json:"password"`
+	FirstName    string   `json:"first_name"`
+	LastName     string   `json:"last_name"`
+	Phone        string   `json:"phone"`
+	Role         string   `json:"role"`
+	ConsentCodes []string `json:"consent_codes"`
 }
 
 type UserLogin struct {

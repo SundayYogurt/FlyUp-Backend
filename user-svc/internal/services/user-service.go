@@ -61,8 +61,8 @@ type UserService interface {
 
 type userService struct {
 	// user
-	repo repository.UserRepository
-
+	repo     repository.UserRepository
+	bankRepo repository.BankAccountRepository
 	// roles
 	roleRepo     repository.RoleRepository
 	userRoleRepo repository.UserRoleRepository
@@ -72,9 +72,10 @@ type userService struct {
 	universityRepo repository.UniversityRepository
 
 	// kyc
-	kycRepo  repository.KYCRepository
-	iapp     *iapp.Client
-	uploader interfaces.Uploader
+	kycRepo     repository.KYCRepository
+	iapp        *iapp.Client
+	uploader    interfaces.Uploader
+	consentRepo repository.ConsentRepository
 
 	// messaging
 	producer interfaces.ProducerHandler
@@ -88,8 +89,10 @@ func NewUserService(
 	universityRepo repository.UniversityRepository,
 	roleRepo repository.RoleRepository,
 	userRoleRepo repository.UserRoleRepository,
+	bankRepo repository.BankAccountRepository,
 	iappClient *iapp.Client,
 	uploader interfaces.Uploader,
+	consentRepo repository.ConsentRepository,
 ) UserService {
 	return &userService{
 		repo:           repo,
@@ -99,8 +102,10 @@ func NewUserService(
 		universityRepo: universityRepo,
 		roleRepo:       roleRepo,
 		userRoleRepo:   userRoleRepo,
+		bankRepo:       bankRepo,
 		iapp:           iappClient,
 		uploader:       uploader,
+		consentRepo:    consentRepo,
 	}
 }
 
@@ -108,33 +113,36 @@ func NewUserService(
    AUTH
 ========================= */
 
+func HasConsent(codes []string, need string) bool {
+	need = strings.ToUpper(need)
+	for _, c := range codes {
+		if strings.ToUpper(strings.TrimSpace(c)) == need {
+			return true
+		}
+	}
+	return false
+}
+
 func (u *userService) Register(input dto.RegisterRequest) error {
 	email := strings.TrimSpace(strings.ToLower(input.Email))
-	displayName := strings.TrimSpace(input.DisplayName)
+	firstName := strings.TrimSpace(input.FirstName)
+	lastName := strings.TrimSpace(input.LastName)
+	phone := strings.TrimSpace(input.Phone)
 	role := strings.TrimSpace(strings.ToUpper(input.Role))
 
-	if email == "" || input.Password == "" || displayName == "" {
+	if email == "" || strings.TrimSpace(input.Password) == "" || firstName == "" || lastName == "" || phone == "" {
 		return errors.New("invalid inputs")
 	}
 	if role != "BOOSTER" && role != "PIONEER" {
 		return errors.New("invalid role")
 	}
 
-	// role-specific: pioneer ต้องมีข้อมูล
-	if role == "PIONEER" {
-		if input.Pioneer == nil {
-			return errors.New("pioneer data is required")
-		}
-		if input.Pioneer.StudentCardURL == nil || strings.TrimSpace(*input.Pioneer.StudentCardURL) == "" {
-			return errors.New("student_card_url is required")
-		}
-		if strings.TrimSpace(input.Pioneer.StudentCode) == "" ||
-			strings.TrimSpace(input.Pioneer.Faculty) == "" ||
-			strings.TrimSpace(input.Pioneer.Major) == "" ||
-			strings.TrimSpace(input.Pioneer.YearLevel) == "" {
-			return errors.New("missing pioneer fields")
-		}
+	if !HasConsent(input.ConsentCodes, domain.ConsentTerms) {
+		return errors.New("must accept terms")
+	}
 
+	// pioneer: ตรวจ domain ตอนสมัคร (ยืนยันตัวตนค่อยทำทีหลัง)
+	if role == "PIONEER" {
 		emailDomain, err := utils.ExtractEmailDomain(email)
 		if err != nil {
 			return err
@@ -144,43 +152,49 @@ func (u *userService) Register(input dto.RegisterRequest) error {
 		}
 	}
 
-	// check duplicate email
+	// duplicate email
 	if existing, err := u.repo.FindUserByEmail(email); err == nil && existing != nil && existing.ID != 0 {
 		return errors.New("email already exists")
 	}
 
-	// hash password
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
 	if err != nil {
-		log.Printf("hash password error: %v", err)
 		return errors.New("failed to hash password")
 	}
 
 	usr := &domain.User{
 		Email:        email,
 		PasswordHash: string(hashedPassword),
-		DisplayName:  displayName,
-		Phone:        input.Phone,
+		FirstName:    firstName,
+		LastName:     lastName,
+		Phone:        phone,
 		Status:       "active",
 	}
 	if err := u.repo.CreateUser(usr); err != nil {
-		log.Printf("create user error: %v", err)
 		return errors.New("failed to create user")
 	}
 
+	now := time.Now()
+
+	for _, code := range input.ConsentCodes {
+		c := &domain.UserConsent{
+			UserID:      usr.ID,
+			ConsentCode: strings.ToUpper(code),
+			Accepted:    true,
+			AcceptedAt:  &now,
+		}
+		if err := u.consentRepo.CreateConsent(c); err != nil {
+			return err
+		}
+	}
+
+	// assign role
 	roleObj, err := u.roleRepo.FindByCode(role)
 	if err != nil {
 		return err
 	}
 	if err := u.userRoleRepo.ReplaceUserRoles(usr.ID, []uint{roleObj.ID}); err != nil {
 		return err
-	}
-
-	// pioneer -> pending profile
-	if role == "PIONEER" {
-		if err := u.upsertPioneerPending(usr.ID, usr.Email, *input.Pioneer); err != nil {
-			return err
-		}
 	}
 
 	// email verification token
@@ -191,16 +205,16 @@ func (u *userService) Register(input dto.RegisterRequest) error {
 	tokenHash := utils.Sha256Hex(plainToken)
 	exp := time.Now().Add(24 * time.Hour)
 
-	log.Println("VERIFY_EMAIL_TOKEN:", plainToken)
-
 	usr.VerificationToken = tokenHash
 	usr.VerificationTokenExpiresAt = &exp
 	if err := u.repo.SaveUser(usr); err != nil {
 		return err
 	}
 
+	// publish event (optional)
 	if u.producer != nil {
-		payload := fmt.Sprintf(`{"user_id":%d,"email":"%s","token":"%s","expires_at":"%s"}`,
+		payload := fmt.Sprintf(
+			`{"user_id":%d,"email":"%s","token":"%s","expires_at":"%s"}`,
 			usr.ID, usr.Email, plainToken, exp.Format(time.RFC3339),
 		)
 		_ = u.producer.PublishMessage([]byte("user.verify_email"), []byte(payload))
@@ -223,17 +237,6 @@ func (u *userService) Login(input dto.UserLogin) (*domain.User, error) {
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(input.Password)); err != nil {
 		return nil, errors.New("invalid email or password")
-	}
-
-	isPioneer, _ := u.userRoleRepo.UserHasRole(user.ID, "PIONEER")
-	if isPioneer {
-		profile, err := u.studentRepo.FindByUserID(user.ID)
-		if err != nil || profile == nil {
-			return nil, errors.New("pioneer profile not found")
-		}
-		if profile.VerifyStatus != domain.StudentVerifyApproved {
-			return nil, errors.New("pioneer account pending admin approval")
-		}
 	}
 
 	return user, nil
@@ -344,17 +347,6 @@ func (u *userService) SetPassword(input dto.SetPasswordRequest) error {
    PROFILE
 ========================= */
 
-func (u *userService) GetProfile(userID uint) (*domain.User, error) {
-	if userID == 0 {
-		return nil, errors.New("invalid user id")
-	}
-	user, err := u.repo.FindUserById(userID)
-	if err != nil || user == nil {
-		return nil, errors.New("user not found")
-	}
-	return user, nil
-}
-
 func (u *userService) UpdateProfile(userID uint, input dto.UpdateUserProfile) (*domain.User, error) {
 	if userID == 0 {
 		return nil, errors.New("invalid user_id")
@@ -365,22 +357,79 @@ func (u *userService) UpdateProfile(userID uint, input dto.UpdateUserProfile) (*
 		return nil, errors.New("user not found")
 	}
 
-	if strings.TrimSpace(input.DisplayName) != "" {
-		user.DisplayName = strings.TrimSpace(input.DisplayName)
+	//PATCH: user fields
+	if input.FirstName != nil {
+		fn := strings.TrimSpace(*input.FirstName)
+		if fn == "" {
+			return nil, errors.New("first_name cannot be empty")
+		}
+		user.FirstName = fn
+	}
+
+	if input.LastName != nil {
+		ln := strings.TrimSpace(*input.LastName)
+		if ln == "" {
+			return nil, errors.New("last_name cannot be empty")
+		}
+		user.LastName = ln
 	}
 
 	if input.Phone != nil {
 		p := strings.TrimSpace(*input.Phone)
 		if p == "" {
-			user.Phone = nil
-		} else {
-			user.Phone = &p
+			return nil, errors.New("phone cannot be empty")
+		}
+		user.Phone = p
+	}
+
+	// ---------- PATCH: bank account (optional) ----------
+	if input.BankAccount != nil {
+		// allow only BOOSTER
+		roleCode, err := u.roleRepo.GetRoleCodeByUserID(userID)
+		if err != nil {
+			return nil, err
+		}
+		roleCode = strings.ToUpper(strings.TrimSpace(roleCode))
+		if roleCode != "BOOSTER" {
+			return nil, errors.New("only booster can update bank account")
+		}
+
+		ba := input.BankAccount
+		bankCode := strings.ToUpper(strings.TrimSpace(ba.BankCode))
+		accountNo := strings.TrimSpace(ba.AccountNo)
+		accountName := strings.TrimSpace(ba.AccountName)
+
+		if bankCode == "" || accountNo == "" || accountName == "" {
+			return nil, errors.New("missing bank_account fields")
+		}
+
+		// สร้างบัญชีใหม่ (เพราะ repo ยังไม่มี update)
+		acc := &domain.UserBankAccount{
+			UserID:      userID,
+			BankCode:    bankCode,
+			AccountNo:   accountNo,
+			AccountName: accountName,
+			Status:      "active",
+			IsDefault:   false,
+		}
+
+		if err := u.bankRepo.Create(acc); err != nil {
+			return nil, err
+		}
+
+		// ถ้าขอให้เป็น default
+		if ba.IsDefault {
+			if err := u.bankRepo.SetDefault(userID, acc.ID); err != nil {
+				return nil, err
+			}
 		}
 	}
 
+	// save user
 	if err := u.repo.SaveUser(user); err != nil {
 		return nil, err
 	}
+
 	return user, nil
 }
 
@@ -465,7 +514,7 @@ func (u *userService) IsPioneer(userID uint) (bool, error) {
 		return false, err
 	}
 	for _, r := range roles {
-		if strings.ToUpper(r.Code) == "Pioneer" {
+		if strings.ToUpper(r.Code) == "PIONEER" {
 			return true, nil
 		}
 	}
@@ -482,7 +531,7 @@ func (u *userService) IsBooster(userID uint) (bool, error) {
 		return false, err
 	}
 	for _, r := range roles {
-		if strings.ToUpper(r.Code) == "Booster" {
+		if strings.ToUpper(r.Code) == "BOOSTER" {
 			return true, nil
 		}
 	}
@@ -521,6 +570,21 @@ func (u *userService) SubmitPioneerVerification(userID uint, input dto.PioneerIn
 		return errors.New("invalid user id")
 	}
 
+	role, err := u.roleRepo.GetRoleCodeByUserID(userID)
+	role = strings.ToUpper(strings.TrimSpace(role))
+	if err != nil {
+		return errors.New("cannot get role code")
+	}
+
+	if role == "PIONEER" {
+		if !HasConsent(input.ConsentCodes, domain.ConsentInfoTrue) {
+			return errors.New("must confirm information is true")
+		}
+		if !HasConsent(input.ConsentCodes, domain.ConsentPioneerTerms) {
+			return errors.New("must accept pioneer terms")
+		}
+	}
+
 	user, err := u.repo.FindUserById(userID)
 	if err != nil || user == nil {
 		return errors.New("user not found")
@@ -550,7 +614,6 @@ func (u *userService) ListPendingPioneerVerifications(limit, offset int) ([]dto.
 			StudentCode:    p.StudentCode,
 			Faculty:        p.Faculty,
 			Major:          p.Major,
-			YearLevel:      p.YearLevel,
 			StudentCardURL: p.StudentCardURL,
 			VerifyStatus:   p.VerifyStatus,
 		})
@@ -574,7 +637,6 @@ func (u *userService) upsertPioneerPending(userID uint, email string, p dto.Pion
 		StudentCode:    strings.TrimSpace(p.StudentCode),
 		Faculty:        strings.TrimSpace(p.Faculty),
 		Major:          strings.TrimSpace(p.Major),
-		YearLevel:      strings.TrimSpace(p.YearLevel),
 		StudentCardURL: p.StudentCardURL,
 		VerifyStatus:   domain.StudentVerifyPending,
 		UniversityID:   &university.ID,
@@ -617,11 +679,26 @@ func (u *userService) SubmitKYCMultipart(
 	if strings.TrimSpace(input.IDFront.Filename) == "" || len(input.IDFront.Bytes) == 0 {
 		return nil, errors.New("id_front is required")
 	}
+
+	role, err := u.roleRepo.GetRoleCodeByUserID(userID)
+	if err != nil {
+		return nil, errors.New("cannot get role code")
+	}
+
+	role = strings.ToUpper(strings.TrimSpace(role))
+	if role != "BOOSTER" {
+		return nil, errors.New("only booster can submit kyc")
+	}
+
 	if len(input.IDFront.Bytes) > maxFileSize {
 		return nil, errors.New("id_front size is too large")
 	}
 	if input.Selfie != nil && len(input.Selfie.Bytes) > maxFileSize {
 		return nil, errors.New("selfie size is too large")
+	}
+
+	if input.Selfie == nil || len(input.Selfie.Bytes) == 0 {
+		return nil, errors.New("selfie is required")
 	}
 
 	for i, f := range input.Others {
@@ -707,7 +784,7 @@ func (u *userService) SubmitKYCMultipart(
 	}
 
 	// =========================
-	// 3) Prepare submission + call iApp face match (optional แต่ถ้าจะ auto-approve ต้องมี)
+	// 3) Prepare submission + call iApp face match
 	// =========================
 	ocrProvider := "iapp"
 	sub := &domain.KYCSubmission{
@@ -909,17 +986,15 @@ func (u *userService) EnsureUserCanInvest(userID uint, projectOwnerID uint) erro
 	return nil
 }
 
-/* =========================
-   HELPERS
-========================= */
-
-func maskThaiID(id string) string {
-	id = strings.TrimSpace(id)
-	id = strings.ReplaceAll(id, "-", "")
-	id = strings.ReplaceAll(id, " ", "")
-	if len(id) <= 4 {
-		return "XXXX"
+func (u *userService) GetProfile(userID uint) (*domain.User, error) {
+	if userID == 0 {
+		return nil, errors.New("invalid user id")
 	}
-	last4 := id[len(id)-4:]
-	return "XXXXXXXXX" + last4
+
+	user, err := u.repo.FindUserById(userID)
+	if err != nil {
+		return nil, err
+	}
+
+	return user, nil
 }

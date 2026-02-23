@@ -71,6 +71,7 @@ func StartServer(cfg config.Config) {
 		&domain.KYCSubmission{},
 		&domain.KYCDocument{},
 		&domain.KYCReview{},
+		&domain.UserConsent{},
 	); err != nil {
 		log.Fatalf("migration error: %v", err)
 	}
@@ -94,6 +95,8 @@ func StartServer(cfg config.Config) {
 	universityRepo := repository.NewUniversityRepository(db)
 	roleRepo := repository.NewRoleRepository(db)
 	userRoleRepo := repository.NewUserRoleRepository(db)
+	BankAccountRepo := repository.NewBankAccountRepository(db)
+	consentRepo := repository.NewConsentRepository(db)
 
 	// ---------- Service ----------
 	userSvc := services.NewUserService(
@@ -104,8 +107,10 @@ func StartServer(cfg config.Config) {
 		universityRepo,
 		roleRepo,
 		userRoleRepo,
+		BankAccountRepo,
 		iappClient,
 		up,
+		consentRepo,
 	)
 
 	// ---------- Handler ----------

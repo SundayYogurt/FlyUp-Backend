@@ -14,19 +14,21 @@ import (
 
 func AuthMiddleware() fiber.Handler {
 	return func(ctx *fiber.Ctx) error {
-		// grab authorization header
-		authHeader := ctx.Get("Authorization")
+		// 1) try cookie first
+		tokenStr := strings.TrimSpace(ctx.Cookies("access_token"))
 
-		//	verify token
-		user, err := VerifyToken(authHeader)
+		// 2) fallback to Authorization header
+		if tokenStr == "" {
+			tokenStr = strings.TrimSpace(ctx.Get("Authorization"))
+		}
+
+		user, err := VerifyToken(tokenStr) // จะปรับ VerifyToken ให้รับได้ 2 แบบ
 		if err != nil {
 			return ctx.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"error": err.Error(),
 			})
 		}
-		//	if token is valid, process to the next handler
 
-		//	assign the decoded user to the context
 		ctx.Locals("userID", uint(user.UserID))
 		ctx.Locals("user", user)
 		return ctx.Next()
@@ -58,41 +60,56 @@ func GenerateToken(userID int, email string) (string, error) {
 }
 
 func VerifyToken(tokenString string) (dto.AuthResponse, error) {
-	tokenArr := strings.Split(tokenString, " ")
-
-	if len(tokenArr) != 2 || tokenArr[0] != "Bearer" {
-		return dto.AuthResponse{}, errors.New("invalid token format")
+	tokenString = strings.TrimSpace(tokenString)
+	if tokenString == "" {
+		return dto.AuthResponse{}, errors.New("missing token")
 	}
-	tokenStr := tokenArr[1]
 
-	token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
+	// support both:
+	// - "Bearer <token>"
+	// - "<token>"
+	if strings.HasPrefix(strings.ToLower(tokenString), "bearer ") {
+		parts := strings.SplitN(tokenString, " ", 2)
+		if len(parts) != 2 || strings.TrimSpace(parts[1]) == "" {
+			return dto.AuthResponse{}, errors.New("invalid token format")
+		}
+		tokenString = strings.TrimSpace(parts[1])
+	}
+
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, errors.New("unexpected signing method")
 		}
 		return []byte(os.Getenv("ACCESS_SECRET")), nil
 	})
-
 	if err != nil {
 		return dto.AuthResponse{}, errors.New("token parse error")
 	}
 
 	claims, ok := token.Claims.(jwt.MapClaims)
-
 	if !ok || !token.Valid {
 		return dto.AuthResponse{}, errors.New("invalid token claims")
 	}
 
-	if float64(time.Now().Unix()) > claims["expiry"].(float64) {
+	// safer expiry parse
+	expAny, ok := claims["expiry"]
+	if !ok {
+		return dto.AuthResponse{}, errors.New("missing expiry")
+	}
+	expFloat, ok := expAny.(float64)
+	if !ok {
+		return dto.AuthResponse{}, errors.New("invalid expiry type")
+	}
+	if float64(time.Now().Unix()) > expFloat {
 		return dto.AuthResponse{}, errors.New("token expired")
 	}
 
 	return dto.AuthResponse{
 		UserID: int(claims["user_id"].(float64)),
 		Email:  claims["email"].(string),
-		Expiry: claims["expiry"].(float64),
+		Expiry: expFloat,
 		Iat:    claims["iat"].(float64),
 	}, nil
-
 }
 
 func AdminOnly(userSvc services.UserService) fiber.Handler {

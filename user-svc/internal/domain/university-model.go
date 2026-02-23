@@ -7,7 +7,7 @@ type University struct {
 	NameTH    string    `gorm:"type:varchar(255);column:name_th" json:"name_th"`
 	NameEN    string    `gorm:"type:varchar(255);column:name_en" json:"name_en"`
 	Province  string    `gorm:"type:varchar(255);column:province" json:"province"`
-	Domain    string    `gorm:"type:varchar(255);uniqueIndex;column:domain" json:"domain,omitempty"`
+	Domain    string    `gorm:"type:varchar(255);uniqueIndex;column:domain" json:"domain"`
 	CreatedAt time.Time `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt time.Time `gorm:"autoUpdateTime" json:"updated_at"`
 }

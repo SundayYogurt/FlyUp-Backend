@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"errors"
 	"time"
 
 	"github.com/SundayYogurt/user_service/internal/domain"
@@ -25,7 +26,25 @@ func NewStudentProfileRepository(db *gorm.DB) StudentProfileRepository {
 }
 
 func (s *studentProfileRepository) Upsert(profile *domain.StudentProfile) error {
-	return s.db.Where("user_id = ?", profile.UserID).Assign(profile).FirstOrCreate(profile).Error
+	var existing domain.StudentProfile
+	err := s.db.Where("user_id = ?", profile.UserID).First(&existing).Error
+
+	if err == nil {
+		// update
+		return s.db.Model(&existing).Updates(map[string]any{
+			"student_card_url": profile.StudentCardURL,
+			"student_code":     profile.StudentCode,
+			"faculty":          profile.Faculty,
+			"major":            profile.Major,
+		}).Error
+	}
+
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		// create
+		return s.db.Create(profile).Error
+	}
+
+	return err
 }
 
 func (s *studentProfileRepository) FindByUserID(userID uint) (*domain.StudentProfile, error) {

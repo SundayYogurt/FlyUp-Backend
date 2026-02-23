@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"errors"
+
 	"github.com/SundayYogurt/user_service/internal/domain"
 	"gorm.io/gorm"
 )
@@ -9,6 +11,7 @@ type RoleRepository interface {
 	FindByCode(code string) (*domain.Role, error)
 	FindByCodes(codes []string) ([]domain.Role, error)
 	List(limit, offset int) ([]domain.Role, error)
+	GetRoleCodeByUserID(userID uint) (string, error)
 }
 
 type roleRepository struct {
@@ -44,4 +47,24 @@ func (r *roleRepository) List(limit, offset int) ([]domain.Role, error) {
 		return nil, err
 	}
 	return roles, nil
+}
+
+func (r *roleRepository) GetRoleCodeByUserID(userID uint) (string, error) {
+	var roleCode string
+
+	err := r.db.
+		Table("user_roles").
+		Select("roles.code").
+		Joins("JOIN roles ON roles.id = user_roles.role_id").
+		Where("user_roles.user_id = ?", userID).
+		Limit(1).
+		Scan(&roleCode).Error
+
+	if err != nil {
+		return "", err
+	}
+	if roleCode == "" {
+		return "", errors.New("role not found for user")
+	}
+	return roleCode, nil
 }

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/SundayYogurt/user_service/internal/api/rest/middleware"
 	"github.com/SundayYogurt/user_service/internal/domain"
@@ -46,10 +47,10 @@ func (h *UserHandler) SetupRoutes(app *fiber.App) {
 	booster.Post("/kyc/submit", h.SubmitKYCMultipart)
 	booster.Get("/kyc/status", h.GetMyKYCStatus)
 
-	// pioneer (FIX PATH)
+	// pioneer
 	pioneer := auth.Group("/pioneer", middleware.PioneerOnly(h.svc))
-	// from: /pioneer/:userID/pioneer/verify  -> to: /pioneer/:userID/verify
-	pioneer.Post("/:userID/verify", h.SubmitPioneerVerification)
+
+	pioneer.Post("/verify", h.SubmitPioneerVerification)
 	pioneer.Post("/uploads/student-card", h.UploadStudentCard)
 
 	// admin only
@@ -122,15 +123,27 @@ func (h *UserHandler) Login(c *fiber.Ctx) error {
 		return utils.ResponseError(c, 500, "could not generate token")
 	}
 
+	//set cookie
+	c.Cookie(&fiber.Cookie{
+		Name:     "access_token",
+		Value:    token,
+		HTTPOnly: true,
+		SameSite: fiber.CookieSameSiteLaxMode,
+		Path:     "/",
+		Expires:  time.Now().Add(24 * time.Hour),
+		// Secure: true, // เปิดเมื่อเป็น https
+	})
+
 	return utils.ResponseSuccess(c, 200, dto.LoginResponse{
 		Token: token,
 		User: dto.UserProfileResponse{
-			ID:          user.ID,
-			Email:       user.Email,
-			DisplayName: user.DisplayName,
-			Status:      user.Status,
-			Phone:       user.Phone,
-			CreatedAt:   user.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+			ID:        user.ID,
+			Email:     user.Email,
+			FirstName: user.FirstName,
+			LastName:  user.LastName,
+			Status:    user.Status,
+			Phone:     user.Phone,
+			CreatedAt: user.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		},
 	})
 }
@@ -311,7 +324,6 @@ func (h *UserHandler) SubmitPioneerVerification(c *fiber.Ctx) error {
 	if strings.TrimSpace(req.StudentCode) == "" ||
 		strings.TrimSpace(req.Faculty) == "" ||
 		strings.TrimSpace(req.Major) == "" ||
-		strings.TrimSpace(req.YearLevel) == "" ||
 		req.StudentCardURL == nil || strings.TrimSpace(*req.StudentCardURL) == "" {
 		return utils.ResponseError(c, 400, "missing required fields")
 	}

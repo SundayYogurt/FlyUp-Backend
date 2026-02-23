@@ -19,7 +19,6 @@ type StudentProfile struct {
 	StudentCode    string     `json:"student_code"`
 	Faculty        string     `json:"faculty"`
 	Major          string     `json:"major"`
-	YearLevel      string     `json:"year_level"`
 	ReviewedBy     *uint      `json:"reviewed_by,omitempty"` //  admin user_id
 	Note           *string    `json:"note,omitempty"`
 	StudentCardURL *string    `json:"student_card_url,omitempty"`

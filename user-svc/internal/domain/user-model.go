@@ -10,9 +10,10 @@ type User struct {
 	ID                         uint       `gorm:"primaryKey" json:"id"`
 	Email                      string     `gorm:"type:varchar(255);uniqueIndex;not null" json:"email"`
 	PasswordHash               string     `gorm:"type:varchar(255);not null" json:"-"`
-	GoogleSub                  *string    `gorm:"type:varchar(255);uniqueIndex" json:"google_sub,omitempty"`
-	DisplayName                string     `gorm:"type:varchar(255)" json:"display_name"`
-	Phone                      *string    `gorm:"type:varchar(50)" json:"phone,omitempty"`
+	GoogleSub                  *string    `gorm:"type:varchar(255)" json:"google_sub,omitempty"`
+	FirstName                  string     `gorm:"type:varchar(100)" json:"first_name"`
+	LastName                   string     `gorm:"type:varchar(100)" json:"last_name"`
+	Phone                      string     `gorm:"type:varchar(50)" json:"phone"`
 	Status                     string     `gorm:"type:varchar(20);not null;default:'active'" json:"status"` // active|suspended|deleted
 	EmailVerifiedAt            *time.Time `json:"email_verified_at,omitempty"`
 	VerificationToken          string     `gorm:"type:varchar(255)" json:"-"`
