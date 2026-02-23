@@ -128,9 +128,10 @@ func (h *UserHandler) Login(c *fiber.Ctx) error {
 		Name:     "access_token",
 		Value:    token,
 		HTTPOnly: true,
-		SameSite: fiber.CookieSameSiteLaxMode,
+		SameSite: fiber.CookieSameSiteNoneMode,
 		Path:     "/",
 		Expires:  time.Now().Add(24 * time.Hour),
+		Secure:   true,
 		// Secure: true, // เปิดเมื่อเป็น https
 	})
 
