@@ -36,9 +36,10 @@ func StartServer(cfg config.Config) {
 
 	// ---------- CORS ----------
 	app.Use(cors.New(cors.Config{
-		AllowOrigins: cfg.BaseURL,
-		AllowHeaders: "Content-Type, Accept, Authorization",
-		AllowMethods: "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+		AllowOrigins:     cfg.BaseURL,
+		AllowHeaders:     "Content-Type, Accept, Authorization",
+		AllowMethods:     "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+		AllowCredentials: true,
 	}))
 
 	// ---------- DB ----------
