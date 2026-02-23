@@ -12,6 +12,7 @@ import (
 	"github.com/SundayYogurt/user_service/internal/clients/iapp"
 	"github.com/SundayYogurt/user_service/internal/domain"
 	"github.com/SundayYogurt/user_service/internal/dto"
+	"github.com/SundayYogurt/user_service/internal/helper"
 	"github.com/SundayYogurt/user_service/internal/interfaces"
 	"github.com/SundayYogurt/user_service/internal/repository"
 	"github.com/SundayYogurt/user_service/pkg/utils"
@@ -113,16 +114,6 @@ func NewUserService(
    AUTH
 ========================= */
 
-func HasConsent(codes []string, need string) bool {
-	need = strings.ToUpper(need)
-	for _, c := range codes {
-		if strings.ToUpper(strings.TrimSpace(c)) == need {
-			return true
-		}
-	}
-	return false
-}
-
 func (u *userService) Register(input dto.RegisterRequest) error {
 	email := strings.TrimSpace(strings.ToLower(input.Email))
 	firstName := strings.TrimSpace(input.FirstName)
@@ -137,7 +128,7 @@ func (u *userService) Register(input dto.RegisterRequest) error {
 		return errors.New("invalid role")
 	}
 
-	if !HasConsent(input.ConsentCodes, domain.ConsentTerms) {
+	if !helper.HasConsent(input.ConsentCodes, domain.ConsentTerms) {
 		return errors.New("must accept terms")
 	}
 
@@ -183,7 +174,11 @@ func (u *userService) Register(input dto.RegisterRequest) error {
 			Accepted:    true,
 			AcceptedAt:  &now,
 		}
-		if err := u.consentRepo.CreateConsent(c); err != nil {
+		err := u.consentRepo.CreateConsent(c)
+		if err != nil {
+			if helper.IsDuplicateConsent(err) {
+				continue //
+			}
 			return err
 		}
 	}
@@ -577,10 +572,10 @@ func (u *userService) SubmitPioneerVerification(userID uint, input dto.PioneerIn
 	}
 
 	if role == "PIONEER" {
-		if !HasConsent(input.ConsentCodes, domain.ConsentInfoTrue) {
+		if !helper.HasConsent(input.ConsentCodes, domain.ConsentInfoTrue) {
 			return errors.New("must confirm information is true")
 		}
-		if !HasConsent(input.ConsentCodes, domain.ConsentPioneerTerms) {
+		if !helper.HasConsent(input.ConsentCodes, domain.ConsentPioneerTerms) {
 			return errors.New("must accept pioneer terms")
 		}
 	}
