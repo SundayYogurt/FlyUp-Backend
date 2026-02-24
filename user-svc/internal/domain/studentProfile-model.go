@@ -24,5 +24,6 @@ type StudentProfile struct {
 	StudentCardURL *string    `json:"student_card_url,omitempty"`
 	VerifyStatus   string     `gorm:"type:varchar(20);not null;default:pending" json:"verify_status"`
 	VerifiedAt     *time.Time `json:"verified_at,omitempty"`
+
 	gorm.Model
 }

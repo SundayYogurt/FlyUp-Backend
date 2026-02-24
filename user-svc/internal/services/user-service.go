@@ -13,9 +13,9 @@ import (
 	"github.com/SundayYogurt/user_service/internal/domain"
 	"github.com/SundayYogurt/user_service/internal/dto"
 	"github.com/SundayYogurt/user_service/internal/helper"
+	"github.com/SundayYogurt/user_service/internal/helper/utils"
 	"github.com/SundayYogurt/user_service/internal/interfaces"
 	"github.com/SundayYogurt/user_service/internal/repository"
-	"github.com/SundayYogurt/user_service/pkg/utils"
 	"github.com/gofiber/fiber/v2"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -64,6 +64,7 @@ type userService struct {
 	// user
 	repo     repository.UserRepository
 	bankRepo repository.BankAccountRepository
+	auth     helper.Auth
 	// roles
 	roleRepo     repository.RoleRepository
 	userRoleRepo repository.UserRoleRepository
@@ -94,6 +95,7 @@ func NewUserService(
 	iappClient *iapp.Client,
 	uploader interfaces.Uploader,
 	consentRepo repository.ConsentRepository,
+	auth helper.Auth,
 ) UserService {
 	return &userService{
 		repo:           repo,
@@ -107,13 +109,11 @@ func NewUserService(
 		iapp:           iappClient,
 		uploader:       uploader,
 		consentRepo:    consentRepo,
+		auth:           auth,
 	}
 }
 
-/* =========================
-   AUTH
-========================= */
-
+// AUTH
 func (u *userService) Register(input dto.RegisterRequest) error {
 	email := strings.TrimSpace(strings.ToLower(input.Email))
 	firstName := strings.TrimSpace(input.FirstName)
@@ -143,17 +143,23 @@ func (u *userService) Register(input dto.RegisterRequest) error {
 		}
 	}
 
-	// duplicate email
-	if existing, err := u.repo.FindUserByEmail(email); err == nil && existing != nil && existing.ID != 0 {
+	// duplicate email (repo คืน *domain.User)
+	existing, err := u.repo.FindUserByEmail(email)
+	if err == nil && existing != nil && existing.ID != 0 {
 		return errors.New("email already exists")
 	}
 
+	if len(input.Password) < 6 {
+		return errors.New("password must be at least 6 characters")
+	}
+
+	// หมายเหตุ: ถ้า err != nil อาจเป็น "not found" ก็ปล่อยผ่านได้
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
 	if err != nil {
 		return errors.New("failed to hash password")
 	}
 
-	usr := &domain.User{
+	newUser := &domain.User{
 		Email:        email,
 		PasswordHash: string(hashedPassword),
 		FirstName:    firstName,
@@ -161,12 +167,16 @@ func (u *userService) Register(input dto.RegisterRequest) error {
 		Phone:        phone,
 		Status:       "active",
 	}
-	if err := u.repo.CreateUser(usr); err != nil {
+
+	usr, err := u.repo.CreateUser(newUser)
+	if err != nil {
+		return err
+	}
+	if usr == nil || usr.ID == 0 {
 		return errors.New("failed to create user")
 	}
 
 	now := time.Now()
-
 	for _, code := range input.ConsentCodes {
 		c := &domain.UserConsent{
 			UserID:      usr.ID,
@@ -174,10 +184,9 @@ func (u *userService) Register(input dto.RegisterRequest) error {
 			Accepted:    true,
 			AcceptedAt:  &now,
 		}
-		err := u.consentRepo.CreateConsent(c)
-		if err != nil {
+		if err := u.consentRepo.CreateConsent(c); err != nil {
 			if helper.IsDuplicateConsent(err) {
-				continue //
+				continue
 			}
 			return err
 		}
@@ -202,6 +211,7 @@ func (u *userService) Register(input dto.RegisterRequest) error {
 
 	usr.VerificationToken = tokenHash
 	usr.VerificationTokenExpiresAt = &exp
+
 	if err := u.repo.SaveUser(usr); err != nil {
 		return err
 	}
@@ -220,9 +230,14 @@ func (u *userService) Register(input dto.RegisterRequest) error {
 
 func (u *userService) Login(input dto.UserLogin) (*domain.User, error) {
 	email := strings.TrimSpace(strings.ToLower(input.Email))
+	password := strings.TrimSpace(input.Password)
+
+	if email == "" || password == "" {
+		return nil, errors.New("invalid email or password")
+	}
 
 	user, err := u.repo.FindUserByEmail(email)
-	if err != nil || user == nil {
+	if err != nil || user == nil || user.ID == 0 {
 		return nil, errors.New("invalid email or password")
 	}
 
@@ -230,7 +245,12 @@ func (u *userService) Login(input dto.UserLogin) (*domain.User, error) {
 		return nil, errors.New("please verify email")
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(input.Password)); err != nil {
+	// ถ้าคุณมี status
+	if user.Status != "" && user.Status != "active" {
+		return nil, errors.New("account is not active")
+	}
+
+	if err := u.auth.VerifyPassword(password, user.PasswordHash); err != nil {
 		return nil, errors.New("invalid email or password")
 	}
 
@@ -316,6 +336,10 @@ func (u *userService) SetPassword(input dto.SetPasswordRequest) error {
 		return errors.New("invalid input")
 	}
 
+	if len(input.NewPassword) < 6 {
+		return errors.New("password must be at least 6 characters")
+	}
+
 	hash := utils.Sha256Hex(token)
 	user, err := u.repo.FindUserByResetToken(hash)
 	if err != nil || user == nil {
@@ -338,10 +362,7 @@ func (u *userService) SetPassword(input dto.SetPasswordRequest) error {
 	return u.repo.SaveUser(user)
 }
 
-/* =========================
-   PROFILE
-========================= */
-
+// Profile
 func (u *userService) UpdateProfile(userID uint, input dto.UpdateUserProfile) (*domain.User, error) {
 	if userID == 0 {
 		return nil, errors.New("invalid user_id")
@@ -556,34 +577,68 @@ func (u *userService) CreateUniversity(adminID uint, input dto.UniversityCreateR
 	return u.universityRepo.AddUniversity(un)
 }
 
-/* =========================
-   PIONEER
-========================= */
-
 func (u *userService) SubmitPioneerVerification(userID uint, input dto.PioneerInput) error {
 	if userID == 0 {
 		return errors.New("invalid user id")
 	}
 
+	// 1) must be pioneer
 	role, err := u.roleRepo.GetRoleCodeByUserID(userID)
-	role = strings.ToUpper(strings.TrimSpace(role))
 	if err != nil {
 		return errors.New("cannot get role code")
 	}
-
-	if role == "PIONEER" {
-		if !helper.HasConsent(input.ConsentCodes, domain.ConsentInfoTrue) {
-			return errors.New("must confirm information is true")
-		}
-		if !helper.HasConsent(input.ConsentCodes, domain.ConsentPioneerTerms) {
-			return errors.New("must accept pioneer terms")
-		}
+	role = strings.ToUpper(strings.TrimSpace(role))
+	if role != "PIONEER" {
+		return errors.New("pioneer only")
 	}
 
+	// 2) validate required consents for verification step
+	if !helper.HasConsent(input.ConsentCodes,
+		domain.ConsentInfoTrue,
+	) {
+		return errors.New("must accept pioneer Info consent")
+	}
+	if !helper.HasConsent(input.ConsentCodes,
+		domain.ConsentPioneerTerms,
+	) {
+		return errors.New("must accept pioneer terms consent")
+	}
+
+	// 3) load user (need email)
 	user, err := u.repo.FindUserById(userID)
 	if err != nil || user == nil {
 		return errors.New("user not found")
 	}
+
+	// 4) persist consents (idempotent)
+	now := time.Now()
+	for _, code := range input.ConsentCodes {
+		code = strings.ToUpper(strings.TrimSpace(code))
+		if code == "" {
+			continue
+		}
+
+		// บันทึกเฉพาะ 2 อันที่เกี่ยวกับขั้น verify (กันคนส่งมาเยอะเกิน)
+		if code != domain.ConsentInfoTrue && code != domain.ConsentPioneerTerms {
+			continue
+		}
+
+		c := &domain.UserConsent{
+			UserID:      userID,
+			ConsentCode: code,
+			Accepted:    true,
+			AcceptedAt:  &now,
+		}
+
+		if err := u.consentRepo.CreateConsent(c); err != nil {
+			if helper.IsDuplicateConsent(err) {
+				continue // เคยกดยอมรับแล้ว
+			}
+			return err
+		}
+	}
+
+	// 5) upsert pioneer verification as pending
 	return u.upsertPioneerPending(userID, user.Email, input)
 }
 
@@ -778,9 +833,8 @@ func (u *userService) SubmitKYCMultipart(
 		})
 	}
 
-	// =========================
 	// 3) Prepare submission + call iApp face match
-	// =========================
+
 	ocrProvider := "iapp"
 	sub := &domain.KYCSubmission{
 		UserID:      userID,
@@ -816,9 +870,8 @@ func (u *userService) SubmitKYCMultipart(
 		sub.OCRError = &msg
 	}
 
-	// =========================
 	// 4) Auto-approve logic
-	// =========================
+
 	faceOK := sub.FaceMatchScore != nil &&
 		sub.FaceMatchPassed != nil &&
 		*sub.FaceMatchScore >= faceThreshold &&
@@ -838,9 +891,8 @@ func (u *userService) SubmitKYCMultipart(
 		}
 	}
 
-	// =========================
 	// 5) Documents + Create (TX)
-	// =========================
+
 	docs := make([]domain.KYCDocument, 0, 1+1+len(otherDocs))
 	docs = append(docs, domain.KYCDocument{
 		DocType: domain.KYCDocTypeIDCard,
@@ -858,9 +910,8 @@ func (u *userService) SubmitKYCMultipart(
 		return nil, err
 	}
 
-	// =========================
 	// 6) Response
-	// =========================
+
 	return &dto.KYCSubmitResponse{
 		KYCID:  sub.ID,
 		Status: string(sub.Status),

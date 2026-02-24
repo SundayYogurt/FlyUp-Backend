@@ -10,51 +10,52 @@ import (
 	"github.com/SundayYogurt/user_service/internal/api/rest/middleware"
 	"github.com/SundayYogurt/user_service/internal/domain"
 	"github.com/SundayYogurt/user_service/internal/dto"
+	"github.com/SundayYogurt/user_service/internal/helper"
+	"github.com/SundayYogurt/user_service/internal/helper/utils"
 	"github.com/SundayYogurt/user_service/internal/services"
-	"github.com/SundayYogurt/user_service/pkg/utils"
 	"github.com/cloudinary/cloudinary-go/v2"
 	"github.com/cloudinary/cloudinary-go/v2/api/uploader"
 	"github.com/gofiber/fiber/v2"
 )
 
 type UserHandler struct {
-	svc services.UserService
-	cld *cloudinary.Cloudinary
+	svc  services.UserService
+	cld  *cloudinary.Cloudinary
+	auth helper.Auth
 }
 
-func NewUserHandler(svc services.UserService, cld *cloudinary.Cloudinary) *UserHandler {
-	return &UserHandler{svc: svc, cld: cld}
+func NewUserHandler(svc services.UserService, cld *cloudinary.Cloudinary, auth helper.Auth) *UserHandler {
+	return &UserHandler{svc: svc, cld: cld, auth: auth}
 }
 
 // Routes
 func (h *UserHandler) SetupRoutes(app *fiber.App) {
 	api := app.Group("/api/v1/users")
 
-	// public
+	// ---------- public ----------
 	api.Post("/register", h.Register)
 	api.Post("/login", h.Login)
 	api.Post("/forgot-password", h.ForgotPassword)
 	api.Post("/reset-password", h.SetPassword)
 	api.Post("/verify-email", h.VerifyEmail)
 
-	// protected
-	auth := api.Group("/", middleware.AuthMiddleware())
-	auth.Get("/me", h.Me)
-	auth.Patch("/profile/:userID", h.UpdateProfile)
+	// ---------- protected ----------
+	protected := api.Group("/", middleware.AuthMiddleware(h.auth))
+	protected.Get("/me", h.Me)
+	protected.Patch("/profile/:userID", h.UpdateProfile)
 
-	// booster kyc
-	booster := auth.Group("/booster", middleware.BoosterOnly(h.svc))
+	// ---------- booster kyc ----------
+	booster := protected.Group("/booster", middleware.BoosterOnly(h.svc))
 	booster.Post("/kyc/submit", h.SubmitKYCMultipart)
 	booster.Get("/kyc/status", h.GetMyKYCStatus)
 
-	// pioneer
-	pioneer := auth.Group("/pioneer", middleware.PioneerOnly(h.svc))
-
-	pioneer.Post("/verify", h.SubmitPioneerVerification)
+	// ---------- pioneer ----------
+	pioneer := protected.Group("/pioneer", middleware.PioneerOnly(h.svc))
+	pioneer.Post("/:userID/verify", h.SubmitPioneerVerification) // ใส่ :userID ให้ตรงกับ handler
 	pioneer.Post("/uploads/student-card", h.UploadStudentCard)
 
-	// admin only
-	admin := auth.Group("/admin", middleware.AdminOnly(h.svc))
+	// ---------- admin ----------
+	admin := protected.Group("/admin", middleware.AdminOnly(h.svc))
 	admin.Patch("/:userID/status", h.SetStatus)
 	admin.Put("/:userID/roles", h.SetRoles)
 	admin.Post("/:userID/pioneer/approve", h.ApprovePioneer)
@@ -113,17 +114,19 @@ func (h *UserHandler) Login(c *fiber.Ctx) error {
 		return utils.ResponseError(c, 400, "invalid input")
 	}
 
+	// 1) authenticate only
 	user, err := h.svc.Login(req)
 	if err != nil {
 		return utils.ResponseError(c, 401, err.Error())
 	}
 
-	token, err := middleware.GenerateToken(int(user.ID), user.Email)
+	// 3) generate token with role
+	token, err := h.auth.GenerateToken(int(user.ID), user.Email)
 	if err != nil {
 		return utils.ResponseError(c, 500, "could not generate token")
 	}
 
-	//set cookie
+	// cookie
 	c.Cookie(&fiber.Cookie{
 		Name:     "access_token",
 		Value:    token,
@@ -132,7 +135,6 @@ func (h *UserHandler) Login(c *fiber.Ctx) error {
 		Path:     "/",
 		Expires:  time.Now().Add(24 * time.Hour),
 		Secure:   true,
-		// Secure: true, // เปิดเมื่อเป็น https
 	})
 
 	return utils.ResponseSuccess(c, 200, dto.LoginResponse{
@@ -144,7 +146,7 @@ func (h *UserHandler) Login(c *fiber.Ctx) error {
 			LastName:  user.LastName,
 			Status:    user.Status,
 			Phone:     user.Phone,
-			CreatedAt: user.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+			CreatedAt: user.CreatedAt.Format(time.RFC3339),
 		},
 	})
 }
@@ -231,16 +233,20 @@ func (h *UserHandler) VerifyEmail(c *fiber.Ctx) error {
 // @Failure 404 {object} dto.APIError
 // @Router /api/v1/users/me [get]
 func (h *UserHandler) Me(c *fiber.Ctx) error {
-	userID, ok := c.Locals("userID").(uint)
-	if !ok || userID == 0 {
+	claimsAny := c.Locals("user")
+	claims, ok := claimsAny.(dto.AuthResponse)
+	if !ok || claims.UserID == 0 {
 		return utils.ResponseError(c, 401, "unauthorized")
 	}
 
-	user, err := h.svc.GetProfile(userID)
+	userID := uint(claims.UserID)
+
+	profile, err := h.svc.GetProfile(userID)
 	if err != nil {
 		return utils.ResponseError(c, 404, err.Error())
 	}
-	return utils.ResponseSuccess(c, 200, fiber.Map{"user": user})
+
+	return utils.ResponseSuccess(c, 200, fiber.Map{"user": profile})
 }
 
 // UpdateProfile godoc

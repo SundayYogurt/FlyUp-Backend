@@ -15,6 +15,7 @@ type Config struct {
 	CloudinaryUrl string
 	IAppApiKey    string
 	BaseURL       string
+	AccessSecret  string
 }
 
 func LoadConfig() Config {
@@ -29,7 +30,7 @@ func LoadConfig() Config {
 	}
 
 	if os.Getenv("ENV") != "prod" {
-		err := godotenv.Overload() // ใช้ Overload ให้ชัวร์
+		err := godotenv.Overload()
 		if err != nil {
 			log.Println("Warning: env file not found or could not be loaded:", err)
 		}
@@ -43,5 +44,6 @@ func LoadConfig() Config {
 		CloudinaryUrl: os.Getenv("CLOUDINARY_URL"),
 		IAppApiKey:    os.Getenv("IAPP_API_KEY"),
 		BaseURL:       os.Getenv("BASE_URL"),
+		AccessSecret:  os.Getenv("ACCESS_SECRET"),
 	}
 }

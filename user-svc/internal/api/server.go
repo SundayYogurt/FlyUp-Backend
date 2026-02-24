@@ -20,6 +20,7 @@ import (
 	"github.com/SundayYogurt/user_service/internal/api/rest/handlers"
 	"github.com/SundayYogurt/user_service/internal/clients/iapp"
 	"github.com/SundayYogurt/user_service/internal/domain"
+	"github.com/SundayYogurt/user_service/internal/helper"
 	"github.com/SundayYogurt/user_service/internal/repository"
 	"github.com/SundayYogurt/user_service/internal/services"
 	"github.com/SundayYogurt/user_service/pkg/cloudinary"
@@ -31,7 +32,6 @@ import (
 
 func StartServer(cfg config.Config) {
 	app := fiber.New()
-
 	RegisterSwagger(app)
 
 	// ---------- CORS ----------
@@ -89,6 +89,8 @@ func StartServer(cfg config.Config) {
 	iappClient := iapp.New(cfg.IAppApiKey)
 	up := cloudinary.NewCloudinaryUploader(cld)
 
+	authHelper := helper.SetupAuth(cfg.AccessSecret)
+
 	// ---------- Repositories ----------
 	userRepo := repository.NewUserRepository(db)
 	kycRepo := repository.NewKYCRepository(db)
@@ -96,9 +98,8 @@ func StartServer(cfg config.Config) {
 	universityRepo := repository.NewUniversityRepository(db)
 	roleRepo := repository.NewRoleRepository(db)
 	userRoleRepo := repository.NewUserRoleRepository(db)
-	BankAccountRepo := repository.NewBankAccountRepository(db)
+	bankAccountRepo := repository.NewBankAccountRepository(db)
 	consentRepo := repository.NewConsentRepository(db)
-
 	// ---------- Service ----------
 	userSvc := services.NewUserService(
 		userRepo,
@@ -108,14 +109,15 @@ func StartServer(cfg config.Config) {
 		universityRepo,
 		roleRepo,
 		userRoleRepo,
-		BankAccountRepo,
+		bankAccountRepo,
 		iappClient,
 		up,
 		consentRepo,
+		authHelper,
 	)
 
 	// ---------- Handler ----------
-	userHandler := handlers.NewUserHandler(userSvc, cld)
+	userHandler := handlers.NewUserHandler(userSvc, cld, authHelper)
 	userHandler.SetupRoutes(app)
 
 	// ---------- Health ----------

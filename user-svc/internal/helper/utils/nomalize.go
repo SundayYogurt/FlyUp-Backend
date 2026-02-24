@@ -4,14 +4,15 @@ package utils
 import (
 	"bytes"
 	"errors"
-	"github.com/rwcarlsen/goexif/exif"
-	"golang.org/x/image/draw"
-	"golang.org/x/image/webp"
 	"image"
 	"image/jpeg"
 	"image/png"
 	"io"
 	"math"
+
+	"github.com/rwcarlsen/goexif/exif"
+	"golang.org/x/image/draw"
+	"golang.org/x/image/webp"
 )
 
 // Features:
@@ -19,11 +20,6 @@ import (
 // - Apply EXIF Orientation (rotate/flip)
 // - Resize (keep aspect) with maxWidth
 // - Encode to JPEG (quality)
-//
-// Deps:
-//   go get github.com/rwcarlsen/goexif/exif
-//   go get golang.org/x/image/draw
-//   go get golang.org/x/image/webp
 
 // NormalizeToJPG decodes input (jpg/png/webp), applies EXIF orientation, resizes to maxWidth (if > 0),
 // then encodes to JPEG with given quality (1..100). Returns JPEG bytes.
