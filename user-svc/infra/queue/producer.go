@@ -2,26 +2,28 @@ package queue
 
 import (
 	"context"
+	"crypto/tls"
 	"log"
 	"time"
 
 	"github.com/segmentio/kafka-go"
+	"github.com/segmentio/kafka-go/sasl/plain"
 )
 
 type Producer struct {
 	writer *kafka.Writer
 }
 
-func NewProducer(broker, topic string) *Producer {
-	// ถ้า config ว่าง ให้ไม่พังระบบ
-	if broker == "" || topic == "" {
-		log.Println("Kafka broker/topic empty - producer disabled")
-		return &Producer{writer: nil}
+func NewProducer(broker, topic, username, password string) *Producer {
+
+	mechanism := plain.Mechanism{
+		Username: username,
+		Password: password,
 	}
 
-	// create topic best-effort (fail ก็แค่ log)
-	if err := createTopic(broker, topic); err != nil {
-		log.Printf("Error creating topic: %v\n", err)
+	transport := &kafka.Transport{
+		SASL: mechanism,
+		TLS:  &tls.Config{},
 	}
 
 	return &Producer{
@@ -29,8 +31,10 @@ func NewProducer(broker, topic string) *Producer {
 			Addr:         kafka.TCP(broker),
 			Topic:        topic,
 			Balancer:     &kafka.LeastBytes{},
-			ReadTimeout:  5 * time.Second,
-			WriteTimeout: 5 * time.Second,
+			RequiredAcks: kafka.RequireAll,
+			Async:        false,
+			Transport:    transport,
+			WriteTimeout: 10 * time.Second,
 		},
 	}
 }
@@ -52,30 +56,30 @@ func (p *Producer) PublishMessage(key, value []byte) error {
 	})
 }
 
-func createTopic(broker, topic string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	conn, err := kafka.DialContext(ctx, "tcp", broker)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-
-	partitions, err := conn.ReadPartitions()
-	if err != nil {
-		return err
-	}
-
-	for _, p := range partitions {
-		if p.Topic == topic {
-			return nil
-		}
-	}
-
-	return conn.CreateTopics(kafka.TopicConfig{
-		Topic:             topic,
-		NumPartitions:     1,
-		ReplicationFactor: 1,
-	})
-}
+//func createTopic(broker, topic string) error {
+//	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+//	defer cancel()
+//
+//	conn, err := kafka.DialContext(ctx, "tcp", broker)
+//	if err != nil {
+//		return err
+//	}
+//	defer conn.Close()
+//
+//	partitions, err := conn.ReadPartitions()
+//	if err != nil {
+//		return err
+//	}
+//
+//	for _, p := range partitions {
+//		if p.Topic == topic {
+//			return nil
+//		}
+//	}
+//
+//	return conn.CreateTopics(kafka.TopicConfig{
+//		Topic:             topic,
+//		NumPartitions:     1,
+//		ReplicationFactor: 1,
+//	})
+//}

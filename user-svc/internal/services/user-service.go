@@ -203,6 +203,7 @@ func (u *userService) Register(input dto.RegisterRequest) error {
 
 	// email verification token
 	plainToken, err := utils.RandomToken(32)
+	log.Printf("Verification token: %s", plainToken)
 	if err != nil {
 		return errors.New("failed to generate verification token")
 	}
@@ -449,9 +450,7 @@ func (u *userService) UpdateProfile(userID uint, input dto.UpdateUserProfile) (*
 	return user, nil
 }
 
-/* =========================
-   ADMIN: STATUS / ROLES / UNIVERSITY
-========================= */
+//ADMIN: STATUS / ROLES / UNIVERSITY
 
 func (u *userService) SetStatus(userID uint, status string) error {
 	if userID == 0 {
