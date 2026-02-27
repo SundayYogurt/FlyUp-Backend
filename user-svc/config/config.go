@@ -16,6 +16,8 @@ type Config struct {
 	IAppApiKey    string
 	BaseURL       string
 	AccessSecret  string
+	KafkaUsername string
+	KafkaPassword string
 }
 
 func LoadConfig() Config {
@@ -45,5 +47,7 @@ func LoadConfig() Config {
 		IAppApiKey:    os.Getenv("IAPP_API_KEY"),
 		BaseURL:       os.Getenv("BASE_URL"),
 		AccessSecret:  os.Getenv("ACCESS_SECRET"),
+		KafkaUsername: os.Getenv("KAFKA_USERNAME"),
+		KafkaPassword: os.Getenv("KAFKA_PASSWORD"),
 	}
 }

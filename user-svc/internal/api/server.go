@@ -33,7 +33,7 @@ import (
 func StartServer(cfg config.Config) {
 	app := fiber.New()
 	RegisterSwagger(app)
-
+	log.Printf("KafkaBroker=%q KafkaTopic=%q", cfg.KafkaBroker, cfg.KafkaTopic)
 	// ---------- CORS ----------
 	app.Use(cors.New(cors.Config{
 		AllowOrigins:     cfg.BaseURL,
@@ -81,7 +81,12 @@ func StartServer(cfg config.Config) {
 	seedRoles(db)
 
 	// ---------- Infra ----------
-	kafkaProducer := queue.NewProducer(cfg.KafkaBroker, cfg.KafkaTopic)
+	kafkaProducer := queue.NewProducer(
+		cfg.KafkaBroker,
+		cfg.KafkaTopic,
+		cfg.KafkaUsername,
+		cfg.KafkaPassword,
+	)
 	cld, err := cloudinary.New()
 	if err != nil {
 		log.Fatalf("cloudinary init error: %v", err)
